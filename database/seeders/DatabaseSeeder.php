@@ -2,24 +2,38 @@
 
 namespace Database\Seeders;
 
+use App\Models\Role;
 use App\Models\User;
-use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
 
 class DatabaseSeeder extends Seeder
 {
-    use WithoutModelEvents;
-
-    /**
-     * Seed the application's database.
-     */
     public function run(): void
     {
-        // User::factory(10)->create();
+        $roles = [
+            ['name' => 'Admin', 'slug' => 'admin', 'description' => 'Full system access'],
+            ['name' => 'Customer', 'slug' => 'customer', 'description' => 'Creates orders and tracks packages'],
+            ['name' => 'Warehouse Staff', 'slug' => 'warehouse', 'description' => 'Receives, stores and ships packages'],
+            ['name' => 'Driver', 'slug' => 'driver', 'description' => 'Delivers packages and collects COD'],
+        ];
 
-        User::factory()->create([
-            'name' => 'Test User',
-            'email' => 'test@example.com',
+        foreach ($roles as $role) {
+            Role::updateOrCreate(['slug' => $role['slug']], $role);
+        }
+
+        $admin = User::updateOrCreate(
+            ['email' => 'admin@qiyou.logistics'],
+            [
+                'name' => 'Admin',
+                'password' => 'password',
+                'status' => 'active',
+            ]
+        );
+        $admin->roles()->sync([Role::where('slug', 'admin')->first()->id]);
+
+        $this->call([
+            StaffDemoSeeder::class,
+            CustomerDemoSeeder::class,
         ]);
     }
 }
