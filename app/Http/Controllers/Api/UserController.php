@@ -3,7 +3,6 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Http\Controllers\Traits\ApiResponse;
 use App\Models\Role;
 use App\Models\User;
 use Illuminate\Http\Request;
@@ -11,7 +10,6 @@ use Illuminate\Support\Facades\Hash;
 
 class UserController extends Controller
 {
-    use ApiResponse;
 
     public function index(Request $request)
     {
@@ -31,12 +29,26 @@ class UserController extends Controller
             });
         }
 
-        return $this->ok($query->orderByDesc('id')->paginate($request->integer('per_page', 15)));
+        $paginator = $query->orderByDesc('id')->paginate($request->integer('per_page', 15));
+        
+        return response()->json([
+            'code' => '1',
+            'data' => [
+                'total' => $paginator->total(),
+                'data' => $paginator->items(),
+                'current_page' => $paginator->currentPage(),
+                'last_page' => $paginator->lastPage(),
+            ]
+        ]);
     }
 
-    public function show(User $user)
+    public function show(Request $request)
     {
-        return $this->ok($user->load('roles'));
+        $user = User::findOrFail($request->input('id'));
+        return response()->json([
+            'code' => '1',
+            'data' => $user->load('roles')
+        ]);
     }
 
     public function store(Request $request)
@@ -61,7 +73,11 @@ class UserController extends Controller
 
         $user->roles()->attach(Role::where('name', $data['role'])->firstOrFail()->id);
 
-        return $this->created($user->load('roles'), 'User created');
+        return response()->json([
+            'code' => '1',
+            'message' => 'User created',
+            'data' => $user->load('roles')
+        ]);
     }
 
     public function update(Request $request, User $user)
@@ -89,17 +105,109 @@ class UserController extends Controller
             $user->roles()->sync([Role::where('name', $data['role'])->firstOrFail()->id]);
         }
 
-        return $this->ok($user->fresh()->load('roles'), 'User updated');
+        return response()->json([
+            'code' => '1',
+            'message' => 'User updated',
+            'data' => $user->fresh()->load('roles')
+        ]);
     }
 
-    public function destroy(User $user)
+    public function destroy(Request $request)
     {
+        $user = User::findOrFail($request->input('id'));
+        
         if ($user->id === auth()->id()) {
-            return $this->error('You cannot delete your own account', 422);
+            return response()->json([
+                'code' => '0',
+                'message' => 'You cannot delete your own account'
+            ], 422);
         }
 
         $user->delete();
 
-        return $this->ok(null, 'User deleted');
+        return response()->json([
+            'code' => '1',
+            'message' => 'User deleted'
+        ]);
+    }
+
+    public function editInfo(Request $request)
+    {
+        $data = $request->validate([
+            'id' => ['required', 'integer', 'exists:users,id'],
+            'name' => ['sometimes', 'string', 'max:255'],
+            'email' => ['sometimes', 'email'],
+            'phone' => ['nullable', 'string', 'max:30'],
+        ]);
+
+        $user = User::findOrFail($request->input('id'));
+        $user->update($data);
+
+        return response()->json([
+            'code' => '1',
+            'message' => 'User info updated',
+            'data' => $user->fresh()->load('roles')
+        ]);
+    }
+
+    public function editPass(Request $request)
+    {
+        $data = $request->validate([
+            'id' => ['required', 'integer', 'exists:users,id'],
+            'password' => ['required', 'string', 'min:6'],
+        ]);
+
+        $user = User::findOrFail($request->input('id'));
+        $user->password = Hash::make($data['password']);
+        $user->save();
+
+        return response()->json([
+            'code' => '1',
+            'message' => 'Password updated'
+        ]);
+    }
+
+    public function resetPass(Request $request)
+    {
+        $data = $request->validate([
+            'id' => ['required', 'integer', 'exists:users,id'],
+        ]);
+
+        $user = User::findOrFail($request->input('id'));
+        $user->password = Hash::make('123456'); // default password
+        $user->save();
+
+        return response()->json([
+            'code' => '1',
+            'message' => 'Password reset to 123456'
+        ]);
+    }
+
+    public function batchDelete(Request $request)
+    {
+        $ids = $request->input('data', []);
+
+        if (empty($ids)) {
+            return response()->json([
+                'code' => '0',
+                'message' => 'No users selected'
+            ], 422);
+        }
+
+        // Prevent deleting self
+        $authId = auth()->id();
+        if (in_array($authId, $ids)) {
+            return response()->json([
+                'code' => '0',
+                'message' => 'You cannot delete your own account'
+            ], 422);
+        }
+
+        User::whereIn('id', $ids)->delete();
+
+        return response()->json([
+            'code' => '1',
+            'message' => 'Users deleted'
+        ]);
     }
 }

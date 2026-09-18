@@ -48,6 +48,45 @@ class CustomerAppController extends Controller
         ]);
     }
 
+    public function updateProfile(Request $request)
+    {
+        $user = $request->user();
+        $customer = $this->customerForUser($user);
+
+        if (! $customer) {
+            return $this->error('No customer profile linked to this account', 404);
+        }
+
+        $validated = $request->validate([
+            'name' => ['required', 'string', 'max:255'],
+            'phone' => ['nullable', 'string', 'max:30'],
+            'address' => ['nullable', 'string', 'max:255'],
+            'city' => ['nullable', 'string', 'max:100'],
+            'country' => ['nullable', 'string', 'max:100'],
+        ]);
+
+        $customer->name = $validated['name'];
+        foreach (['phone', 'address', 'city', 'country'] as $field) {
+            if (array_key_exists($field, $validated)) {
+                $customer->{$field} = $validated[$field] ?? null;
+            }
+        }
+        $customer->save();
+
+        $user->name = $validated['name'];
+        $user->save();
+
+        return $this->ok([
+            'user' => [
+                'id' => $user->id,
+                'name' => $user->name,
+                'email' => $user->email,
+                'phone' => $user->phone,
+            ],
+            'customer' => $customer->fresh(),
+        ], 'Profile updated');
+    }
+
     public function orders(Request $request)
     {
         $user = $request->user();
@@ -60,7 +99,7 @@ class CustomerAppController extends Controller
         $query = Order::with([
             'originWarehouse:id,name,code,city,country',
             'destinationWarehouse:id,name,code,city,country',
-            'packages:id,order_id,package_no,barcode,status,current_warehouse_id,current_bin_id,weight,quantity',
+            'packages:id,order_id,package_no,barcode,status,current_warehouse_id,current_bin_id,description,weight,quantity,length,width,height,chargeable_weight,declared_value',
         ])->where('customer_id', $customer->id)->orderByDesc('id');
 
         if ($status = $request->input('status')) {

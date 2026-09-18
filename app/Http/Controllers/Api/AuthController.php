@@ -47,8 +47,8 @@ class AuthController extends Controller
     {
         $validated = $request->validate([
             'name' => ['required', 'string', 'max:100'],
-            'email' => ['required', 'email', 'max:150', 'unique:users,email', 'unique:customers,email'],
-            'phone' => ['required', 'string', 'max:30'],
+            'email' => ['required', 'email', 'max:150'],
+            'phone' => ['nullable', 'string', 'max:30'],
             'password' => ['required', 'string', 'min:6', 'max:100'],
             'address' => ['sometimes', 'nullable', 'string', 'max:255'],
             'city' => ['sometimes', 'nullable', 'string', 'max:100'],
@@ -56,7 +56,7 @@ class AuthController extends Controller
         ]);
 
         try {
-            $customer = DB::transaction(function () use ($validated) {
+            [$customer, $user] = DB::transaction(function () use ($validated) {
                 $customer = Customer::create([
                     'name' => $validated['name'],
                     'email' => $validated['email'],
@@ -79,10 +79,10 @@ class AuthController extends Controller
                 ]);
                 $user->roles()->syncWithoutDetaching([$role->id]);
 
-                return $customer;
+                return [$customer, $user];
             });
 
-            $user = User::with('roles')->where('email', $validated['email'])->first();
+            $user->load('roles');
             $token = $user->createToken('logistics-api')->plainTextToken;
 
             return $this->created([

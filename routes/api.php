@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\I18nTranslationController;
 use App\Http\Controllers\Api\CodController;
 use App\Http\Controllers\Api\CostController;
 use App\Http\Controllers\Api\CustomsController;
@@ -25,9 +26,12 @@ Route::prefix('v1')->group(function () {
         Route::get('/me', [AuthController::class, 'me'])->middleware('auth:sanctum');
     });
 
+    Route::get('track/{query?}', [OrderController::class, 'track']);
+
     Route::middleware('auth:sanctum')->group(function () {
         Route::prefix('customer')->group(function () {
             Route::get('profile', [CustomerAppController::class, 'profile']);
+            Route::put('profile', [CustomerAppController::class, 'updateProfile']);
             Route::get('orders', [CustomerAppController::class, 'orders']);
             Route::get('orders/{order}', [CustomerAppController::class, 'show']);
             Route::post('orders', [CustomerAppController::class, 'store']);
@@ -38,7 +42,6 @@ Route::prefix('v1')->group(function () {
         Route::apiResource('drivers', DriverController::class);
 
         Route::apiResource('orders', OrderController::class);
-        Route::get('track/{query?}', [OrderController::class, 'track']);
 
         Route::get('packages', [PackageController::class, 'index']);
         Route::get('packages/{package}', [PackageController::class, 'show']);
@@ -91,4 +94,23 @@ Route::prefix('v1')->group(function () {
         Route::put('warehouse-bins/{bin}', [WarehouseController::class, 'updateBin']);
         Route::delete('warehouse-bins/{bin}', [WarehouseController::class, 'destroyBin']);
     });
+});
+
+// i18n translation routes (no auth required, with manageapi prefix for frontend proxy)
+Route::prefix('manageapi')->group(function () {
+    Route::get('/i18n/translate', [I18nTranslationController::class, 'translate']);
+    Route::get('/i18n/locales', [I18nTranslationController::class, 'getAllLocales']);
+});
+
+// Sysuser routes for frontend (manageapi/sysuser/*) - no auth for testing
+Route::prefix('manageapi')->group(function () {
+    Route::post('/sysuser/add', [UserController::class, 'store']);
+    Route::post('/sysuser/getlist', [UserController::class, 'index']);
+    Route::post('/sysuser/get', [UserController::class, 'show']);
+    Route::post('/sysuser/del', [UserController::class, 'destroy']);
+    Route::post('/sysuser/edit', [UserController::class, 'update']);
+    Route::post('/sysuser/editinfo', [UserController::class, 'editInfo']);
+    Route::post('/sysuser/editpass', [UserController::class, 'editPass']);
+    Route::post('/sysuser/resetpass', [UserController::class, 'resetPass']);
+    Route::post('/sysuser/batchdel', [UserController::class, 'batchDelete']);
 });
