@@ -4,6 +4,7 @@ namespace Database\Seeders;
 
 use App\Models\Role;
 use App\Models\User;
+use App\Models\Warehouse;
 use Illuminate\Database\Seeder;
 
 class DatabaseSeeder extends Seeder
@@ -30,6 +31,15 @@ class DatabaseSeeder extends Seeder
             ]
         );
         $admin->roles()->sync([Role::where('slug', 'admin')->first()->id]);
+
+        Warehouse::firstOrCreate(
+            ['code' => 'TW-O01'],
+            ['name' => 'Taiwan Origin Hub', 'city' => 'Taipei', 'country' => 'Taiwan', 'type' => 'origin', 'status' => 'active']
+        );
+        Warehouse::firstOrCreate(
+            ['code' => 'KH-D01'],
+            ['name' => 'Phnom Penh Destination Hub', 'city' => 'Phnom Penh', 'country' => 'Cambodia', 'type' => 'destination', 'status' => 'active']
+        );
 
         $this->call([
             StaffDemoSeeder::class,
