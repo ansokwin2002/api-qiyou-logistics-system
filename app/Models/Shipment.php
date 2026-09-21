@@ -9,6 +9,7 @@ class Shipment extends Model
     protected $fillable = [
         'shipment_no',
         'order_id',
+        'carrier',
         'status',
         'departed_at',
         'arrived_at',

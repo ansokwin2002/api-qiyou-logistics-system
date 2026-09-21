@@ -86,6 +86,16 @@ class Order extends Model
         return $this->morphMany(TrackingEvent::class, 'trackable');
     }
 
+    public function costs(): HasMany
+    {
+        return $this->hasMany(Cost::class);
+    }
+
+    public function invoices(): HasMany
+    {
+        return $this->hasMany(Invoice::class);
+    }
+
     public function getStatusLabelAttribute(): string
     {
         return str_replace('_', ' ', ucfirst($this->status));

@@ -15,7 +15,9 @@ class UserController extends Controller
     {
         $query = User::query()->with('roles');
 
-        if ($search = $request->input('search')) {
+        // Accept both 'search' and 'keyword' for search
+        $search = $request->input('search') ?? $request->input('keyword');
+        if ($search) {
             $query->where(function ($q) use ($search) {
                 $q->where('name', 'like', "%{$search}%")
                     ->orWhere('email', 'like', "%{$search}%")
@@ -29,7 +31,11 @@ class UserController extends Controller
             });
         }
 
-        $paginator = $query->orderByDesc('id')->paginate($request->integer('per_page', 15));
+        // Accept both 'per_page' and 'pageSize'
+        $perPage = $request->input('per_page') ?? $request->input('pageSize') ?? 15;
+        $page = $request->input('page', 1);
+        
+        $paginator = $query->orderByDesc('id')->paginate($perPage, ['*'], 'page', $page);
         
         return response()->json([
             'code' => '1',
@@ -116,6 +122,23 @@ class UserController extends Controller
     {
         $user = User::findOrFail($request->input('id'));
         
+        // Prevent deleting demo users
+        $demoEmails = [
+            'admin@qiyou.logistics',
+            'manager@qiyou.logistics',
+            'warehouse@qiyou.logistics',
+            'driver@qiyou.logistics',
+            'finance@qiyou.logistics',
+            'demo@qiyou.logistics',
+        ];
+        
+        if (in_array($user->email, $demoEmails)) {
+            return response()->json([
+                'code' => '0',
+                'message' => 'Cannot delete demo user: ' . $user->email
+            ], 422);
+        }
+        
         if ($user->id === auth()->id()) {
             return response()->json([
                 'code' => '0',
@@ -186,11 +209,40 @@ class UserController extends Controller
     public function batchDelete(Request $request)
     {
         $ids = $request->input('data', []);
+        
+        // Also check if data is sent directly as array
+        if (empty($ids) && $request->isJson()) {
+            $jsonData = $request->json()->all();
+            if (isset($jsonData['data'])) {
+                $ids = $jsonData['data'];
+            } elseif (is_array($jsonData)) {
+                $ids = $jsonData;
+            }
+        }
 
         if (empty($ids)) {
             return response()->json([
                 'code' => '0',
                 'message' => 'No users selected'
+            ], 422);
+        }
+
+        // Prevent deleting demo users
+        $demoEmails = [
+            'admin@qiyou.logistics',
+            'manager@qiyou.logistics',
+            'warehouse@qiyou.logistics',
+            'driver@qiyou.logistics',
+            'finance@qiyou.logistics',
+            'demo@qiyou.logistics',
+        ];
+
+        $demoUsers = User::whereIn('id', $ids)->whereIn('email', $demoEmails)->get();
+        if ($demoUsers->isNotEmpty()) {
+            $emails = $demoUsers->pluck('email')->implode(', ');
+            return response()->json([
+                'code' => '0',
+                'message' => 'Cannot delete demo users: ' . $emails
             ], 422);
         }
 

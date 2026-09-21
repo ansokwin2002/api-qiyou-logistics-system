@@ -30,7 +30,7 @@ class DashboardController extends Controller
         $deliveredCount = Package::where('status', Package::STATUS_DELIVERED)->count();
         $pickedUpCount = Package::where('status', Package::STATUS_PICKED_UP)->count();
 
-        $totalFee = (float) Order::where('status', Order::STATUS_COMPLETED)->sum('estimated_fee');
+        $totalFee = (float) Order::sum('estimated_fee');
         $totalCost = (float) Cost::sum('amount');
         $codCollected = (float) CodCollection::sum('collected_amount');
         $codExpected = (float) Order::where('payment_method', 'cod')->sum('estimated_fee');
@@ -75,6 +75,30 @@ class DashboardController extends Controller
                 'pickups' => $pendingPickups,
             ],
             'monthly_orders' => $monthly,
+            'orders_by_status' => Order::selectRaw('status, COUNT(*) as count')
+                ->groupBy('status')
+                ->get()
+                ->pluck('count', 'status')
+                ->mapWithKeys(function ($count, $status) {
+                    $map = [
+                        'pending' => 'pending',
+                        'confirmed' => 'confirmed',
+                        'in_progress' => 'in_progress',
+                        'completed' => 'completed',
+                        'cancelled' => 'cancelled',
+                        'in_transit' => 'in_progress',
+                        'cleared' => 'in_progress',
+                        'in_warehouse' => 'confirmed',
+                        'arrived' => 'in_progress',
+                        'ready_for_pickup' => 'completed',
+                        'out_for_delivery' => 'in_progress',
+                        'delivered' => 'completed',
+                        'picked_up' => 'completed',
+                    ];
+                    $key = $map[$status] ?? $status;
+                    return [$key => $count];
+                })
+                ->toArray(),
         ]);
     }
 }

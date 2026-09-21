@@ -15,6 +15,7 @@ use App\Http\Controllers\Api\OrderController;
 use App\Http\Controllers\Api\PackageController;
 use App\Http\Controllers\Api\ShipmentController;
 use App\Http\Controllers\Api\WarehouseController;
+use App\Http\Controllers\Api\ManageApiController;
 use App\Http\Controllers\Api\UserController;
 use Illuminate\Support\Facades\Route;
 
@@ -114,3 +115,68 @@ Route::prefix('manageapi')->group(function () {
     Route::post('/sysuser/resetpass', [UserController::class, 'resetPass']);
     Route::post('/sysuser/batchdel', [UserController::class, 'batchDelete']);
 });
+
+// ManageAPI routes for frontend admin panel compatibility (maps CRUD-style calls to backend data)
+    // Note: auth middleware is disabled for development/demo mode. Enable in production.
+    Route::prefix('manageapi')->group(function () {
+        // Order CRUD
+        Route::post('/order/getlist', [ManageApiController::class, 'orderList']);
+        Route::match(['get', 'post'], '/order/get', [ManageApiController::class, 'orderGet']);
+        Route::post('/order/add', [ManageApiController::class, 'orderAdd']);
+        Route::post('/order/edit', [ManageApiController::class, 'orderEdit']);
+        Route::match(['get', 'post'], '/order/del', [ManageApiController::class, 'orderDel']);
+
+        // Customer CRUD
+        Route::post('/customer/getlist', [ManageApiController::class, 'customerList']);
+        Route::post('/customer/add', [ManageApiController::class, 'customerAdd']);
+        Route::post('/customer/edit', [ManageApiController::class, 'customerEdit']);
+        Route::match(['get', 'post'], '/customer/del', [ManageApiController::class, 'customerDel']);
+
+        // Warehouse CRUD
+        Route::post('/warehouse/getlist', [ManageApiController::class, 'warehouseList']);
+        Route::match(['get', 'post'], '/warehouse/get', [ManageApiController::class, 'warehouseGet']);
+        Route::post('/warehouse/add', [ManageApiController::class, 'warehouseAdd']);
+        Route::post('/warehouse/edit', [ManageApiController::class, 'warehouseEdit']);
+        Route::match(['get', 'post'], '/warehouse/del', [ManageApiController::class, 'warehouseDel']);
+
+        // Package CRUD
+        Route::post('/package/getlist', [ManageApiController::class, 'packageList']);
+        Route::post('/package/add', [ManageApiController::class, 'packageAdd']);
+        Route::match(['get', 'post'], '/package/del', [ManageApiController::class, 'packageDel']);
+
+        // Shipment
+        Route::post('/shipment/getlist', [ManageApiController::class, 'shipmentList']);
+
+        // Delivery
+        Route::post('/delivery/getlist', [ManageApiController::class, 'deliveryList']);
+
+        // COD
+        Route::post('/cod/getlist', [ManageApiController::class, 'codList']);
+
+        // Cost
+        Route::post('/cost/getlist', [ManageApiController::class, 'costList']);
+        Route::post('/cost/add', [ManageApiController::class, 'costAdd']);
+        Route::match(['get', 'post'], '/cost/del', [ManageApiController::class, 'costDel']);
+
+        // Tracking
+        Route::post('/tracking/getlist', [ManageApiController::class, 'trackingList']);
+
+        // Customs
+        Route::post('/customs/getlist', [ManageApiController::class, 'customsList']);
+
+        // Pickup
+        Route::post('/pickup/getlist', [ManageApiController::class, 'pickupList']);
+
+        // Report
+        Route::post('/report/getlist', [ManageApiController::class, 'reportList']);
+        Route::match(['get', 'post'], '/report/getstatistics', [ManageApiController::class, 'reportStatistics']);
+
+        // Statement
+        Route::post('/statement/getlist', [ManageApiController::class, 'statementList']);
+        Route::post('/statement/add', [ManageApiController::class, 'statementAdd']);
+        Route::post('/statement/edit', [ManageApiController::class, 'statementEdit']);
+        Route::match(['get', 'post'], '/statement/del', [ManageApiController::class, 'statementDel']);
+
+        // System settings
+        Route::post('/systemset/getlist', [ManageApiController::class, 'systemsetList']);
+    });

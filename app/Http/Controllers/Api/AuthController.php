@@ -38,6 +38,8 @@ class AuthController extends Controller
 
         return $this->ok([
             'token' => $token,
+            'access_token' => $token,
+            'refresh_token' => $token,
             'user' => $user,
             'roles' => $user->role_names,
         ], 'Login successful');

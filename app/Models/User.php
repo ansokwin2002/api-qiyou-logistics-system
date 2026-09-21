@@ -37,6 +37,21 @@ class User extends Authenticatable
     ];
 
     /**
+     * The accessors to append to the model's array form.
+     *
+     * @var array
+     */
+    protected $appends = [
+        'userName',
+        'nickName',
+        'realName',
+        'gender',
+        'mobile',
+        'state',
+        'addTime',
+    ];
+
+    /**
      * Get the attributes that should be cast.
      *
      * @return array<string, string>
@@ -67,5 +82,41 @@ class User extends Authenticatable
     public function getRoleNamesAttribute(): array
     {
         return $this->roles->pluck('slug')->all();
+    }
+
+    // Frontend field mappings
+    public function getUserNameAttribute()
+    {
+        return $this->name;
+    }
+
+    public function getNickNameAttribute()
+    {
+        return $this->name;
+    }
+
+    public function getRealNameAttribute()
+    {
+        return $this->name;
+    }
+
+    public function getGenderAttribute()
+    {
+        return 1; // default male
+    }
+
+    public function getMobileAttribute()
+    {
+        return $this->phone;
+    }
+
+    public function getStateAttribute()
+    {
+        return $this->status === 'active' ? 1 : 0;
+    }
+
+    public function getAddTimeAttribute()
+    {
+        return $this->created_at ? $this->created_at->timestamp : 0;
     }
 }

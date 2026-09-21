@@ -13,6 +13,7 @@ class Warehouse extends Model
         'city',
         'country',
         'phone',
+        'contact_name',
         'type',
         'status',
         'notes',
