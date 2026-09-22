@@ -19,6 +19,16 @@ class AuthController extends Controller
 
     public function login(Request $request)
     {
+        return $this->attemptLogin($request, false);
+    }
+
+    public function adminLogin(Request $request)
+    {
+        return $this->attemptLogin($request, true);
+    }
+
+    private function attemptLogin(Request $request, bool $staffOnly)
+    {
         $credentials = $request->validate([
             'email' => ['required', 'email'],
             'password' => ['required', 'string'],
@@ -32,6 +42,15 @@ class AuthController extends Controller
 
         if ($user->status !== 'active') {
             return $this->error('Account is inactive', 403);
+        }
+
+        if ($staffOnly) {
+            // Customer-only accounts (public registration) are not allowed
+            // into the admin dashboard; they must use the customer portal.
+            $isStaff = $user->roles->contains(fn ($role) => $role->slug !== 'customer');
+            if (! $isStaff) {
+                return $this->forbidden('Access denied. Staff accounts only. Customers must use the customer portal.');
+            }
         }
 
         $token = $user->createToken('logistics-api')->plainTextToken;

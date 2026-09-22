@@ -56,6 +56,30 @@ class Order extends Model
         return $prefix . str_pad((string) $seq, 5, '0', STR_PAD_LEFT);
     }
 
+    public static function generateTrackingNo(): string
+    {
+        $dateStr = date('Ymd');
+        $prefix = 'KH' . $dateStr . '-';
+        
+        // Get last tracking number for today from database
+        $last = self::where('tracking_ref', 'like', $prefix . '%')
+            ->orderByDesc('tracking_ref')
+            ->value('tracking_ref');
+        
+        if ($last) {
+            // Extract the number part after KHYYYYMMDD-
+            $num = intval(substr($last, -3)) + 1;
+            // Reset if it exceeds 999 (start new day)
+            if ($num > 999) {
+                $num = 1;
+            }
+        } else {
+            $num = 1;
+        }
+        
+        return $prefix . str_pad((string) $num, 3, '0', STR_PAD_LEFT);
+    }
+
     public function customer()
     {
         return $this->belongsTo(Customer::class);
