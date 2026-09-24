@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\CustomerAppController;
 use App\Http\Controllers\Api\CustomerController;
 use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\DeliveryController;
+use App\Http\Controllers\Api\DriverAppController;
 use App\Http\Controllers\Api\DriverController;
 use App\Http\Controllers\Api\InvoiceController;
 use App\Http\Controllers\Api\OrderController;
@@ -29,6 +30,20 @@ Route::prefix('v1')->group(function () {
     });
 
     Route::get('track/{query?}', [OrderController::class, 'track']);
+
+    Route::prefix('delivery')->group(function () {
+        Route::post('login', [DriverAppController::class, 'login']);
+        Route::post('register', [DriverAppController::class, 'register']);
+
+        Route::middleware('auth:sanctum')->group(function () {
+            Route::get('profile', [DriverAppController::class, 'profile']);
+            Route::put('profile', [DriverAppController::class, 'updateProfile']);
+            Route::post('logout', [DriverAppController::class, 'logout']);
+            Route::post('mytasks', [DriverAppController::class, 'myTasks']);
+            Route::get('task/{id}', [DriverAppController::class, 'taskDetail']);
+            Route::post('updatestatus', [DriverAppController::class, 'updateStatus']);
+        });
+    });
 
     Route::middleware('auth:sanctum')->group(function () {
         Route::prefix('customer')->group(function () {
@@ -150,6 +165,13 @@ Route::prefix('manageapi')->group(function () {
 
         // Delivery
         Route::post('/delivery/getlist', [ManageApiController::class, 'deliveryList']);
+        Route::match(['get', 'post'], '/delivery/get', [ManageApiController::class, 'deliveryGet']);
+        Route::post('/delivery/add', [ManageApiController::class, 'deliveryAdd']);
+        Route::post('/delivery/edit', [ManageApiController::class, 'deliveryEdit']);
+        Route::match(['get', 'post'], '/delivery/del', [ManageApiController::class, 'deliveryDel']);
+        Route::post('/delivery/assign', [ManageApiController::class, 'deliveryAssign']);
+        Route::get('/delivery/drivers', [ManageApiController::class, 'deliveryDrivers']);
+        Route::match(['get', 'post'], '/delivery/orders', [ManageApiController::class, 'deliveryOrders']);
 
         // COD
         Route::post('/cod/getlist', [ManageApiController::class, 'codList']);

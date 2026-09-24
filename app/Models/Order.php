@@ -60,23 +60,24 @@ class Order extends Model
     {
         $dateStr = date('Ymd');
         $prefix = 'KH' . $dateStr . '-';
-        
-        // Get last tracking number for today from database
-        $last = self::where('tracking_ref', 'like', $prefix . '%')
-            ->orderByDesc('tracking_ref')
-            ->value('tracking_ref');
-        
-        if ($last) {
-            // Extract the number part after KHYYYYMMDD-
-            $num = intval(substr($last, -3)) + 1;
-            // Reset if it exceeds 999 (start new day)
-            if ($num > 999) {
-                $num = 1;
-            }
-        } else {
+
+        // Daily sequence: KH{YYYYMMDD}-001, 002, ... resets to 001 each day.
+        // Only count rows already in the new format (no leading '#').
+        $max = 0;
+        self::where('tracking_ref', 'like', $prefix . '%')
+            ->pluck('tracking_ref')
+            ->each(function ($ref) use (&$max) {
+                $seq = (int) substr($ref, -3);
+                if ($seq > $max) {
+                    $max = $seq;
+                }
+            });
+
+        $num = $max + 1;
+        if ($num > 999) {
             $num = 1;
         }
-        
+
         return $prefix . str_pad((string) $num, 3, '0', STR_PAD_LEFT);
     }
 

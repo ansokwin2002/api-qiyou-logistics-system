@@ -175,7 +175,7 @@ class CustomerAppController extends Controller
         return DB::transaction(function () use ($data, $customer) {
             $order = Order::create([
                 'order_no' => Order::generateOrderNo(),
-                'tracking_ref' => '#KH' . date('Ymd') . '-' . str_pad((string) random_int(1, 999), 3, '0', STR_PAD_LEFT),
+                'tracking_ref' => Order::generateTrackingNo(),
                 'customer_id' => $customer->id,
                 'sender_name' => $data['sender_name'] ?? $customer->name,
                 'sender_phone' => $data['sender_phone'] ?? $customer->phone,

@@ -76,6 +76,7 @@ class OrderController extends Controller
         return DB::transaction(function () use ($data) {
             $order = Order::create([
                 'order_no' => Order::generateOrderNo(),
+                'tracking_ref' => Order::generateTrackingNo(),
                 'customer_id' => $data['customer_id'],
                 'origin_warehouse_id' => $data['origin_warehouse_id'],
                 'destination_warehouse_id' => $data['destination_warehouse_id'],
@@ -141,22 +142,27 @@ class OrderController extends Controller
 
     public function track(Request $request, ?string $query = null)
     {
-        $search = $query ?? $request->input('search');
+        $search = trim($query ?? $request->input('search', ''));
 
-        if (! $search) {
+        if ($search === '') {
             return $this->error('Tracking number required', 422);
         }
+
+        $bare = ltrim($search, '#');
 
         $package = Package::with([
             'order.customer',
             'order.originWarehouse',
             'order.destinationWarehouse',
             'trackingEvents' => fn ($q) => $q->orderByDesc('created_at'),
-        ])->where(function ($q) use ($search) {
+        ])->where(function ($q) use ($search, $bare) {
             $q->where('barcode', $search)
                 ->orWhere('package_no', $search)
-                ->orWhereHas('order', function ($o) use ($search) {
-                    $o->where('order_no', $search);
+                ->orWhereHas('order', function ($o) use ($search, $bare) {
+                    $o->where('order_no', $search)
+                        ->orWhere('tracking_ref', $search)
+                        ->orWhere('tracking_ref', $bare)
+                        ->orWhere('tracking_ref', '#' . $bare);
                 });
         })->first();
 

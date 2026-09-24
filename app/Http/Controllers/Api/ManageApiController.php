@@ -9,6 +9,7 @@ use App\Models\Cost;
 use App\Models\Customer;
 use App\Models\CustomsDeclaration;
 use App\Models\Delivery;
+use App\Models\Driver;
 use App\Models\Invoice;
 use App\Models\Order;
 use App\Models\Package;
@@ -169,7 +170,7 @@ class ManageApiController extends Controller
         return DB::transaction(function () use ($data, $customerId, $originId, $destinationId, $fulfillment) {
             $order = Order::create([
                 'order_no' => Order::generateOrderNo(),
-                'tracking_ref' => '#' . Order::generateTrackingNo(),
+                'tracking_ref' => Order::generateTrackingNo(),
                 'customer_id' => $customerId,
                 'origin_warehouse_id' => $originId,
                 'destination_warehouse_id' => $destinationId,
@@ -725,7 +726,7 @@ class ManageApiController extends Controller
         }
 
         if ($status = ($params['status'] ?? null)) {
-            $query->where('status', $this->normalizeStatus($status));
+            $query->where('status', $this->normalizeDeliveryStatus($status));
         }
 
         $page = (int) ($params['page'] ?? 1);
@@ -738,6 +739,7 @@ class ManageApiController extends Controller
                 'id' => $d->id,
                 'deliveryNo' => 'DLV-' . str_pad((string) $d->id, 5, '0', STR_PAD_LEFT),
                 'orderNo' => $d->order?->order_no ?? 'N/A',
+                'driverId' => $d->driver_id,
                 'driverName' => $d->driver?->name ?? 'Unassigned',
                 'receiverName' => $d->receiver_name,
                 'receiverPhone' => $d->receiver_phone,
@@ -745,7 +747,10 @@ class ManageApiController extends Controller
                 'codExpected' => (float) ($d->codCollection?->expected_amount ?? 0),
                 'codCollected' => (float) ($d->codCollection?->collected_amount ?? 0),
                 'codDifference' => (float) ($d->codCollection?->difference ?? 0),
-                'status' => strtoupper(str_replace('_', ' ', $d->status)),
+                'status' => $this->displayDeliveryStatus($d->status),
+                'note' => $d->notes,
+                'signature' => $d->signature,
+                'issueReason' => $d->issue_reason,
                 'addTime' => $d->created_at ? strtotime($d->created_at) : time(),
             ];
         })->values();
@@ -756,6 +761,354 @@ class ManageApiController extends Controller
             'per_page' => $paginator->perPage(),
             'current_page' => $paginator->currentPage(),
         ]);
+    }
+
+    public function deliveryGet(Request $request)
+    {
+        $params = $this->getParams($request);
+        $id = $params['id'] ?? $request->query('id');
+        $d = Delivery::with(['order:id,order_no', 'driver:id,name,phone', 'package:id,quantity', 'codCollection'])->find($id);
+
+        if (! $d) {
+            return $this->frontendError('Delivery not found', 404);
+        }
+
+        return $this->frontendOk([
+            'id' => $d->id,
+            'deliveryNo' => 'DLV-' . str_pad((string) $d->id, 5, '0', STR_PAD_LEFT),
+            'orderNo' => $d->order?->order_no ?? '',
+            'driverId' => $d->driver_id,
+            'driverName' => $d->driver?->name ?? '',
+            'receiverName' => $d->receiver_name ?? '',
+            'receiverPhone' => $d->receiver_phone ?? '',
+            'quantity' => $d->package?->quantity ?? 1,
+            'codExpected' => (float) ($d->codCollection?->expected_amount ?? 0),
+            'codCollected' => (float) ($d->codCollection?->collected_amount ?? 0),
+            'status' => $this->displayDeliveryStatus($d->status),
+            'note' => $d->notes ?? '',
+            'signature' => $d->signature,
+            'issueReason' => $d->issue_reason,
+        ]);
+    }
+
+    public function deliveryAdd(Request $request)
+    {
+        $params = $this->getParams($request);
+
+        if (empty($params['orderNo'])) {
+            return $this->frontendError('Order No. is required');
+        }
+
+        $order = Order::where('order_no', $params['orderNo'])->first();
+        if (! $order) {
+            return $this->frontendError('Order not found: ' . $params['orderNo']);
+        }
+
+        if (Delivery::where('order_id', $order->id)->where('type', Delivery::TYPE_DELIVERY)->exists()) {
+            return $this->frontendError('A delivery task already exists for this order');
+        }
+
+        $driverId = $this->resolveDriverUserId($params);
+        if (! empty($params['driverId']) && ! $driverId) {
+            return $this->frontendError('Driver not found');
+        }
+
+        $status = $this->normalizeDeliveryStatus($params['status'] ?? 'ASSIGNED');
+        $packageId = $order->packages()->value('id');
+
+        return DB::transaction(function () use ($params, $order, $driverId, $status, $packageId) {
+            $delivery = Delivery::create([
+                'order_id' => $order->id,
+                'package_id' => $packageId,
+                'type' => Delivery::TYPE_DELIVERY,
+                'driver_id' => $driverId,
+                'status' => $status,
+                'ready_at' => now(),
+                'assigned_at' => $driverId ? now() : null,
+                'delivered_at' => in_array($status, [Delivery::STATUS_DELIVERED], true) ? now() : null,
+                'receiver_name' => $params['receiverName'] ?? $order->receiver_name ?? null,
+                'receiver_phone' => $params['receiverPhone'] ?? $order->receiver_phone ?? null,
+                'notes' => $params['note'] ?? null,
+            ]);
+
+            if ($packageId && ! empty($params['quantity'])) {
+                Package::where('id', $packageId)->update(['quantity' => (int) $params['quantity']]);
+            }
+
+            $this->syncDeliveryCod($delivery, $order, $params);
+
+            if ($status === Delivery::STATUS_OUT_FOR_DELIVERY && $packageId) {
+                Package::where('id', $packageId)->update(['status' => Package::STATUS_OUT_FOR_DELIVERY]);
+            }
+
+            if ($status === Delivery::STATUS_DELIVERED && $packageId) {
+                Package::where('id', $packageId)->update(['status' => Package::STATUS_DELIVERED]);
+            }
+
+            return $this->frontendOk($this->deliveryRowPayload($delivery->fresh(['order', 'driver', 'package', 'codCollection'])), 'Delivery created');
+        });
+    }
+
+    public function deliveryEdit(Request $request)
+    {
+        $params = $this->getParams($request);
+        $id = $params['id'] ?? null;
+        $delivery = Delivery::find($id);
+
+        if (! $delivery) {
+            return $this->frontendError('Delivery not found', 404);
+        }
+
+        $driverId = $delivery->driver_id;
+        if (array_key_exists('driverId', $params) || array_key_exists('driverName', $params)) {
+            $driverId = $this->resolveDriverUserId($params);
+            if (! empty($params['driverId']) && ! $driverId) {
+                return $this->frontendError('Driver not found');
+            }
+        }
+
+        $status = isset($params['status'])
+            ? $this->normalizeDeliveryStatus($params['status'])
+            : $delivery->status;
+
+        return DB::transaction(function () use ($params, $delivery, $driverId, $status) {
+            $delivery->update([
+                'driver_id' => $driverId,
+                'status' => $status,
+                'receiver_name' => $params['receiverName'] ?? $delivery->receiver_name,
+                'receiver_phone' => $params['receiverPhone'] ?? $delivery->receiver_phone,
+                'notes' => $params['note'] ?? $delivery->notes,
+                'assigned_at' => $driverId ? ($delivery->assigned_at ?? now()) : $delivery->assigned_at,
+                'delivered_at' => $status === Delivery::STATUS_DELIVERED
+                    ? ($delivery->delivered_at ?? now())
+                    : $delivery->delivered_at,
+            ]);
+
+            if (! empty($params['quantity']) && $delivery->package_id) {
+                Package::where('id', $delivery->package_id)->update(['quantity' => (int) $params['quantity']]);
+            }
+
+            if ($delivery->order) {
+                $this->syncDeliveryCod($delivery, $delivery->order, $params);
+            }
+
+            return $this->frontendOk($this->deliveryRowPayload($delivery->fresh(['order', 'driver', 'package', 'codCollection'])), 'Delivery updated');
+        });
+    }
+
+    public function deliveryDel(Request $request)
+    {
+        $params = $this->getParams($request);
+        $id = $params['id'] ?? $request->query('id');
+        $delivery = Delivery::find($id);
+
+        if (! $delivery) {
+            return $this->frontendError('Delivery not found', 404);
+        }
+
+        $delivery->delete();
+
+        return $this->frontendOk(null, 'Delivery deleted');
+    }
+
+    public function deliveryDrivers()
+    {
+        $items = Driver::query()
+            ->where('status', 'active')
+            ->with('user:id,name,email,phone')
+            ->orderBy('name')
+            ->get()
+            ->filter(fn ($d) => $d->user_id)
+            ->map(fn ($d) => [
+                'id' => $d->user_id,
+                'driverId' => $d->id,
+                'name' => $d->user?->name ?? $d->name,
+                'phone' => $d->phone ?? $d->user?->phone,
+                'email' => $d->user?->email,
+            ])
+            ->values();
+
+        return $this->frontendOk($items);
+    }
+
+    public function deliveryOrders(Request $request)
+    {
+        $params = $this->getParams($request);
+        $keyword = $params['keyword'] ?? $params['q'] ?? null;
+
+        $query = Order::query()
+            ->where('fulfillment_method', 'delivery')
+            ->with([
+                'packages:id,order_id,quantity',
+                'customer:id,name,phone',
+            ])
+            ->whereDoesntHave('deliveries', function ($q) {
+                $q->where('type', Delivery::TYPE_DELIVERY);
+            })
+            ->orderByDesc('id');
+
+        if ($keyword) {
+            $query->where(function ($q) use ($keyword) {
+                $q->where('order_no', 'like', "%{$keyword}%")
+                    ->orWhere('tracking_ref', 'like', "%{$keyword}%")
+                    ->orWhere('receiver_name', 'like', "%{$keyword}%")
+                    ->orWhere('receiver_phone', 'like', "%{$keyword}%")
+                    ->orWhereHas('customer', function ($cq) use ($keyword) {
+                        $cq->where('name', 'like', "%{$keyword}%")
+                            ->orWhere('phone', 'like', "%{$keyword}%");
+                    });
+            });
+        }
+
+        $items = $query->limit(50)->get()->map(function ($order) {
+            $qty = (int) ($order->packages->sum('quantity') ?: 1);
+
+            return [
+                'id' => $order->id,
+                'orderNo' => $order->order_no,
+                'trackingRef' => $order->tracking_ref,
+                'customerName' => $order->customer?->name,
+                'receiverName' => $order->receiver_name ?? $order->customer?->name,
+                'receiverPhone' => $order->receiver_phone ?? $order->customer?->phone,
+                'receiverAddress' => $order->receiver_address,
+                'quantity' => $qty > 0 ? $qty : 1,
+                'codExpected' => $order->payment_method === 'cod' ? (float) $order->estimated_fee : 0,
+                'status' => $this->displayOrderStatus($order->status),
+                'label' => $order->order_no
+                    . ($order->tracking_ref ? ' · ' . $order->tracking_ref : '')
+                    . ($order->receiver_name ? ' · ' . $order->receiver_name : ''),
+            ];
+        })->values();
+
+        return $this->frontendOk($items);
+    }
+
+    public function deliveryAssign(Request $request)
+    {
+        $params = $this->getParams($request);
+        $id = $params['id'] ?? null;
+        $delivery = Delivery::find($id);
+
+        if (! $delivery) {
+            return $this->frontendError('Delivery not found', 404);
+        }
+
+        $driverId = $this->resolveDriverUserId($params);
+        if (! $driverId) {
+            return $this->frontendError('Driver not found');
+        }
+
+        $delivery->update([
+            'driver_id' => $driverId,
+            'status' => Delivery::STATUS_PENDING,
+            'assigned_at' => now(),
+        ]);
+
+        return $this->frontendOk($this->deliveryRowPayload($delivery->fresh(['order', 'driver', 'package', 'codCollection'])), 'Driver assigned');
+    }
+
+    private function resolveDriverUserId(array $params): ?int
+    {
+        if (! empty($params['driverId'])) {
+            return (int) $params['driverId'];
+        }
+
+        if (! empty($params['driver_id'])) {
+            return (int) $params['driver_id'];
+        }
+
+        if (! empty($params['driverName'])) {
+            $userId = Driver::whereHas('user', function ($q) use ($params) {
+                $q->where('name', 'like', '%' . $params['driverName'] . '%');
+            })->value('user_id');
+
+            if ($userId) {
+                return (int) $userId;
+            }
+
+            return (int) User::whereHas('roles', function ($q) {
+                $q->where('slug', 'driver');
+            })->where('name', 'like', '%' . $params['driverName'] . '%')->value('id') ?: null;
+        }
+
+        return null;
+    }
+
+    private function syncDeliveryCod(Delivery $delivery, Order $order, array $params): void
+    {
+        $expected = (float) ($params['codExpected'] ?? ($delivery->codCollection?->expected_amount ?? 0));
+        $collected = (float) ($params['codCollected'] ?? ($delivery->codCollection?->collected_amount ?? 0));
+
+        if ($expected <= 0 && $collected <= 0) {
+            return;
+        }
+
+        $settlement = $collected >= $expected
+            ? CodCollection::STATUS_COLLECTED
+            : ($collected > 0 ? CodCollection::STATUS_PARTIAL : CodCollection::STATUS_PENDING);
+
+        CodCollection::updateOrCreate(
+            ['delivery_id' => $delivery->id],
+            [
+                'order_id' => $order->id,
+                'package_id' => $delivery->package_id,
+                'expected_amount' => $expected,
+                'collected_amount' => $collected,
+                'difference' => round($expected - $collected, 2),
+                'settlement_status' => $settlement,
+                'collected_at' => $collected > 0 ? ($delivery->codCollection?->collected_at ?? now()) : null,
+            ]
+        );
+    }
+
+    private function deliveryRowPayload(Delivery $d): array
+    {
+        return [
+            'id' => $d->id,
+            'deliveryNo' => 'DLV-' . str_pad((string) $d->id, 5, '0', STR_PAD_LEFT),
+            'orderNo' => $d->order?->order_no ?? 'N/A',
+            'driverId' => $d->driver_id,
+            'driverName' => $d->driver?->name ?? 'Unassigned',
+            'receiverName' => $d->receiver_name,
+            'receiverPhone' => $d->receiver_phone,
+            'quantity' => $d->package?->quantity ?? 1,
+            'codExpected' => (float) ($d->codCollection?->expected_amount ?? 0),
+            'codCollected' => (float) ($d->codCollection?->collected_amount ?? 0),
+            'codDifference' => (float) ($d->codCollection?->difference ?? 0),
+            'status' => $this->displayDeliveryStatus($d->status),
+            'note' => $d->notes,
+            'signature' => $d->signature,
+            'issueReason' => $d->issue_reason,
+            'addTime' => $d->created_at ? strtotime($d->created_at) : time(),
+        ];
+    }
+
+    private function normalizeDeliveryStatus(string $status): string
+    {
+        $map = [
+            'ASSIGNED' => Delivery::STATUS_PENDING,
+            'PENDING' => Delivery::STATUS_PENDING,
+            'OUT FOR DELIVERY' => Delivery::STATUS_OUT_FOR_DELIVERY,
+            'DELIVERED' => Delivery::STATUS_DELIVERED,
+            'PICKED UP' => Delivery::STATUS_PICKED_UP,
+            'FAILED' => Delivery::STATUS_FAILED,
+            'RETURNED' => Delivery::STATUS_FAILED,
+        ];
+
+        return $map[strtoupper($status)] ?? strtolower(str_replace(' ', '_', $status));
+    }
+
+    private function displayDeliveryStatus(string $status): string
+    {
+        $map = [
+            Delivery::STATUS_PENDING => 'ASSIGNED',
+            Delivery::STATUS_OUT_FOR_DELIVERY => 'OUT FOR DELIVERY',
+            Delivery::STATUS_DELIVERED => 'DELIVERED',
+            Delivery::STATUS_PICKED_UP => 'PICKED UP',
+            Delivery::STATUS_FAILED => 'FAILED',
+        ];
+
+        return $map[$status] ?? strtoupper(str_replace('_', ' ', $status));
     }
 
     // ==================== COD ====================
