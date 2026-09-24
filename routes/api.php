@@ -42,6 +42,7 @@ Route::prefix('v1')->group(function () {
             Route::post('mytasks', [DriverAppController::class, 'myTasks']);
             Route::get('task/{id}', [DriverAppController::class, 'taskDetail']);
             Route::post('updatestatus', [DriverAppController::class, 'updateStatus']);
+            Route::post('location', [DriverAppController::class, 'updateLocation']);
         });
     });
 
@@ -171,6 +172,7 @@ Route::prefix('manageapi')->group(function () {
         Route::match(['get', 'post'], '/delivery/del', [ManageApiController::class, 'deliveryDel']);
         Route::post('/delivery/assign', [ManageApiController::class, 'deliveryAssign']);
         Route::get('/delivery/drivers', [ManageApiController::class, 'deliveryDrivers']);
+        Route::get('/delivery/live', [ManageApiController::class, 'deliveryLive']);
         Route::match(['get', 'post'], '/delivery/orders', [ManageApiController::class, 'deliveryOrders']);
 
         // COD

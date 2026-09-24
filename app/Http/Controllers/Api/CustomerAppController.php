@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Traits\ApiResponse;
 use App\Models\Customer;
+use App\Models\Delivery;
 use App\Models\Order;
 use App\Models\Package;
 use App\Models\SupportTicket;
@@ -100,6 +101,8 @@ class CustomerAppController extends Controller
             'originWarehouse:id,name,code,city,country',
             'destinationWarehouse:id,name,code,city,country',
             'packages:id,order_id,package_no,barcode,status,current_warehouse_id,current_bin_id,description,weight,quantity,length,width,height,chargeable_weight,declared_value',
+            'deliveries:id,order_id,driver_id,status,receiver_name,receiver_phone,delivered_at,signature,issue_reason',
+            'deliveries.location',
         ])->where('customer_id', $customer->id)->orderByDesc('id');
 
         if ($status = $request->input('status')) {
@@ -117,7 +120,16 @@ class CustomerAppController extends Controller
             });
         }
 
-        return $this->ok($query->paginate($request->integer('per_page', 20)));
+        $result = $query->paginate($request->integer('per_page', 20));
+        $result->getCollection()->each(function ($order) {
+            $order->deliveries?->each(function ($delivery) {
+                if ($delivery->status !== Delivery::STATUS_OUT_FOR_DELIVERY) {
+                    $delivery->unsetRelation('location');
+                }
+            });
+        });
+
+        return $this->ok($result);
     }
 
     public function show(Request $request, Order $order)
@@ -133,9 +145,15 @@ class CustomerAppController extends Controller
             'originWarehouse',
             'destinationWarehouse',
             'packages' => fn ($q) => $q->orderBy('id')->with('currentWarehouse:id,name,code', 'currentBin.level.rack.zone'),
-            'deliveries' => fn ($q) => $q->orderByDesc('id'),
+            'deliveries' => fn ($q) => $q->orderByDesc('id')->with('location'),
             'trackingEvents' => fn ($q) => $q->orderByDesc('created_at'),
         ]);
+
+        $order->deliveries->each(function ($delivery) {
+            if ($delivery->status !== Delivery::STATUS_OUT_FOR_DELIVERY) {
+                $delivery->unsetRelation('location');
+            }
+        });
 
         return $this->ok($order);
     }

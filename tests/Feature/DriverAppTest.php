@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Models\Delivery;
+use App\Models\DeliveryLocation;
 use App\Models\Driver;
 use App\Models\Customer;
 use App\Models\Order;
@@ -303,5 +304,98 @@ class DriverAppTest extends TestCase
                 'status' => 'DELIVERED',
             ])
             ->assertNotFound();
+    }
+
+    public function test_driver_can_report_location_only_when_out_for_delivery(): void
+    {
+        $role = Role::create(['name' => 'Driver', 'slug' => 'driver']);
+        $user = User::create([
+            'name' => 'Live Driver',
+            'email' => 'live-driver@example.com',
+            'password' => bcrypt('secret12'),
+            'status' => 'active',
+        ]);
+        $user->roles()->attach($role);
+        $driver = Driver::create([
+            'user_id' => $user->id,
+            'name' => 'Live Driver',
+            'status' => 'active',
+        ]);
+        $warehouse = Warehouse::create([
+            'name' => 'Live Hub',
+            'code' => 'DEST-LIVE-001',
+            'city' => 'Phnom Penh',
+            'country' => 'Cambodia',
+            'type' => 'destination',
+            'status' => 'active',
+        ]);
+        $customer = Customer::create([
+            'name' => 'Live Customer',
+            'email' => 'live-customer@example.com',
+            'status' => 'active',
+        ]);
+        $order = Order::create([
+            'order_no' => 'ORD-LIVE-TEST',
+            'customer_id' => $customer->id,
+            'origin_warehouse_id' => $warehouse->id,
+            'destination_warehouse_id' => $warehouse->id,
+            'payment_method' => 'prepaid',
+            'fulfillment_method' => 'delivery',
+            'status' => Order::STATUS_PENDING,
+            'estimated_fee' => 0,
+            'currency' => 'USD',
+        ]);
+        $delivery = Delivery::create([
+            'order_id' => $order->id,
+            'type' => Delivery::TYPE_DELIVERY,
+            'driver_id' => $driver->user_id,
+            'status' => Delivery::STATUS_PENDING,
+            'receiver_name' => 'Live Receiver',
+        ]);
+        $token = $user->createToken('live-test')->plainTextToken;
+
+        $this->withToken($token)
+            ->postJson('/api/v1/delivery/location', [
+                'deliveryId' => $delivery->id,
+                'latitude' => 11.5564,
+                'longitude' => 104.9282,
+            ])
+            ->assertOk()
+            ->assertJsonPath('message', 'Location ignored: delivery is not active');
+        $this->assertDatabaseMissing('delivery_locations', ['delivery_id' => $delivery->id]);
+
+        $this->withToken($token)
+            ->postJson('/api/v1/delivery/updatestatus', [
+                'id' => $delivery->id,
+                'status' => 'OUT FOR DELIVERY',
+            ])
+            ->assertOk();
+
+        $reported = $this->withToken($token)
+            ->postJson('/api/v1/delivery/location', [
+                'deliveryId' => $delivery->id,
+                'latitude' => 11.56,
+                'longitude' => 104.93,
+                'accuracy' => 12.5,
+                'speed' => 8.2,
+                'heading' => 90,
+            ]);
+
+        $reported->assertOk()->assertJsonPath('message', 'Location updated');
+        $this->assertDatabaseHas('delivery_locations', [
+            'delivery_id' => $delivery->id,
+            'driver_id' => $driver->user_id,
+        ]);
+
+        $loc = DeliveryLocation::where('delivery_id', $delivery->id)->first();
+        $this->assertEqualsWithDelta(11.56, $loc->latitude, 0.0001);
+        $this->assertEqualsWithDelta(104.93, $loc->longitude, 0.0001);
+
+        $live = $this->getJson('/api/manageapi/delivery/live');
+        $live->assertOk()->assertJsonPath('code', '1');
+        $this->assertIsArray($live->json('data'));
+        $this->assertTrue(
+            collect($live->json('data'))->contains(fn ($row) => ($row['id'] ?? null) === $delivery->id)
+        );
     }
 }

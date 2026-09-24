@@ -935,6 +935,42 @@ class ManageApiController extends Controller
         return $this->frontendOk($items);
     }
 
+    public function deliveryLive()
+    {
+        $items = Delivery::query()
+            ->where('type', Delivery::TYPE_DELIVERY)
+            ->where('status', Delivery::STATUS_OUT_FOR_DELIVERY)
+            ->with([
+                'order:id,order_no,tracking_ref,receiver_name,receiver_phone',
+                'driver:id,name,phone',
+                'location',
+            ])
+            ->withCount(['codCollection'])
+            ->get()
+            ->map(fn (Delivery $d) => [
+                'id' => $d->id,
+                'deliveryNo' => NumberGenerator::displayNo('DLV', $d),
+                'orderNo' => $d->order?->order_no,
+                'trackingRef' => $d->order?->tracking_ref,
+                'driverId' => $d->driver_id,
+                'driverName' => $d->driver?->name ?? 'Unassigned',
+                'driverPhone' => $d->driver?->phone,
+                'receiverName' => $d->receiver_name,
+                'receiverPhone' => $d->receiver_phone,
+                'status' => $this->displayDeliveryStatus($d->status),
+                'latitude' => $d->location?->latitude,
+                'longitude' => $d->location?->longitude,
+                'accuracy' => $d->location?->accuracy,
+                'speed' => $d->location?->speed,
+                'heading' => $d->location?->heading,
+                'recordedAt' => $d->location?->recorded_at?->toIso8601String(),
+                'hasLocation' => $d->location !== null,
+            ])
+            ->values();
+
+        return $this->frontendOk($items);
+    }
+
     public function deliveryOrders(Request $request)
     {
         $params = $this->getParams($request);

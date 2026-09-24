@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Controllers\Traits\ApiResponse;
+use App\Models\Delivery;
 use App\Models\Order;
 use App\Models\Package;
 use Illuminate\Http\Request;
@@ -154,6 +155,7 @@ class OrderController extends Controller
             'order.customer',
             'order.originWarehouse',
             'order.destinationWarehouse',
+            'order.deliveries.location',
             'trackingEvents' => fn ($q) => $q->orderByDesc('created_at'),
         ])->where(function ($q) use ($search, $bare) {
             $q->where('barcode', $search)
@@ -169,6 +171,12 @@ class OrderController extends Controller
         if (! $package) {
             return $this->error('Package or order not found', 404);
         }
+
+        $package->order?->deliveries?->each(function ($delivery) {
+            if ($delivery->status !== Delivery::STATUS_OUT_FOR_DELIVERY) {
+                $delivery->unsetRelation('location');
+            }
+        });
 
         return $this->ok($package);
     }

@@ -62,6 +62,11 @@ class Delivery extends Model
         return $this->hasOne(CodCollection::class);
     }
 
+    public function location()
+    {
+        return $this->hasOne(DeliveryLocation::class);
+    }
+
     public function getStatusLabelAttribute(): string
     {
         return str_replace('_', ' ', ucfirst($this->status));

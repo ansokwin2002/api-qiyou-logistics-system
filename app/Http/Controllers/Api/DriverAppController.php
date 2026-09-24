@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Http\Controllers\Traits\ApiResponse;
 use App\Models\CodCollection;
 use App\Models\Delivery;
+use App\Models\DeliveryLocation;
 use App\Models\Driver;
 use App\Models\Order;
 use App\Models\Package;
@@ -356,6 +357,53 @@ class DriverAppController extends Controller
         }
 
         return $this->ok($this->taskPayload($delivery), 'Delivery is already out for delivery');
+    }
+
+    public function updateLocation(Request $request)
+    {
+        [$user, $driver] = $this->driverContext($request);
+
+        if (! $driver) {
+            return $this->error('No driver profile linked to this account', 404);
+        }
+
+        $validated = $request->validate([
+            'deliveryId' => ['required', 'integer', 'exists:deliveries,id'],
+            'latitude' => ['required', 'numeric', 'between:-90,90'],
+            'longitude' => ['required', 'numeric', 'between:-180,180'],
+            'accuracy' => ['nullable', 'numeric', 'min:0'],
+            'speed' => ['nullable', 'numeric', 'min:0'],
+            'heading' => ['nullable', 'numeric'],
+        ]);
+
+        $delivery = Delivery::query()
+            ->where('id', $validated['deliveryId'])
+            ->where('driver_id', $driver->user_id)
+            ->where('type', Delivery::TYPE_DELIVERY)
+            ->first();
+
+        if (! $delivery) {
+            return $this->error('Delivery task not found', 404);
+        }
+
+        if ($delivery->status !== Delivery::STATUS_OUT_FOR_DELIVERY) {
+            return $this->ok(null, 'Location ignored: delivery is not active');
+        }
+
+        DeliveryLocation::updateOrCreate(
+            ['delivery_id' => $delivery->id],
+            [
+                'driver_id' => $driver->user_id,
+                'latitude' => $validated['latitude'],
+                'longitude' => $validated['longitude'],
+                'accuracy' => $validated['accuracy'] ?? null,
+                'speed' => $validated['speed'] ?? null,
+                'heading' => $validated['heading'] ?? null,
+                'recorded_at' => now(),
+            ]
+        );
+
+        return $this->ok(null, 'Location updated');
     }
 
     private function driverContext(Request $request): array
