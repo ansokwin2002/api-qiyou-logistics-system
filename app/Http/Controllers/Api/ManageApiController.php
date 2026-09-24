@@ -800,6 +800,14 @@ class ManageApiController extends Controller
             return $this->frontendError('Order No. is required');
         }
 
+        $driverId = $this->resolveDriverUserId($params);
+        if (! $driverId) {
+            return $this->frontendError('Driver is required');
+        }
+        if (! Driver::where('user_id', $driverId)->exists()) {
+            return $this->frontendError('Driver not found');
+        }
+
         $order = Order::where('order_no', $params['orderNo'])->first();
         if (! $order) {
             return $this->frontendError('Order not found: ' . $params['orderNo']);
@@ -807,11 +815,6 @@ class ManageApiController extends Controller
 
         if (Delivery::where('order_id', $order->id)->where('type', Delivery::TYPE_DELIVERY)->exists()) {
             return $this->frontendError('A delivery task already exists for this order');
-        }
-
-        $driverId = $this->resolveDriverUserId($params);
-        if (! empty($params['driverId']) && ! $driverId) {
-            return $this->frontendError('Driver not found');
         }
 
         $status = $this->normalizeDeliveryStatus($params['status'] ?? 'ASSIGNED');
