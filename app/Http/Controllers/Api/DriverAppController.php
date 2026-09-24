@@ -11,6 +11,7 @@ use App\Models\Order;
 use App\Models\Package;
 use App\Models\Role;
 use App\Models\User;
+use App\Support\NumberGenerator;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -415,7 +416,7 @@ class DriverAppController extends Controller
 
         return [
             'id' => $delivery->id,
-            'deliveryNo' => 'DLV-' . str_pad((string) $delivery->id, 5, '0', STR_PAD_LEFT),
+            'deliveryNo' => NumberGenerator::displayNo('DLV', $delivery),
             'orderNo' => $order?->order_no,
             'trackingNo' => $order?->tracking_ref,
             'status' => $this->taskStatus($delivery->status),

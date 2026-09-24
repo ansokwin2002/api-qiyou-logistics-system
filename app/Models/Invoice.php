@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\NumberGenerator;
 use Illuminate\Database\Eloquent\Model;
 
 class Invoice extends Model
@@ -39,18 +40,8 @@ class Invoice extends Model
 
     public static function generateInvoiceNo(): string
     {
-        $prefix = 'INV-' . date('Y') . '-';
-        $last = self::where('invoice_no', 'like', $prefix . '%')
-            ->orderByDesc('invoice_no')
-            ->value('invoice_no');
-
-        if ($last) {
-            $seq = intval(substr($last, -5)) + 1;
-        } else {
-            $seq = 1;
-        }
-
-        return $prefix . str_pad((string) $seq, 5, '0', STR_PAD_LEFT);
+        // INV-2026-09-24-001 — daily sequence, resets each day
+        return NumberGenerator::next(self::class, 'invoice_no', 'INV');
     }
 
     public function customer()

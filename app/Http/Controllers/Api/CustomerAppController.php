@@ -237,7 +237,7 @@ class CustomerAppController extends Controller
         ]);
 
         $ticket = SupportTicket::create([
-            'ticket_no' => 'SUP-' . date('Y') . '-' . str_pad((string) random_int(1, 99999), 5, '0', STR_PAD_LEFT),
+            'ticket_no' => SupportTicket::generateTicketNo(),
             'customer_id' => $this->customerForUser($request->user())?->id,
             'subject' => $data['subject'],
             'message' => $data['message'],

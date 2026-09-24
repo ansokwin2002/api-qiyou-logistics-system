@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\NumberGenerator;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
@@ -42,43 +43,14 @@ class Order extends Model
 
     public static function generateOrderNo(): string
     {
-        $prefix = 'ORD-' . date('Y') . '-';
-        $last = self::where('order_no', 'like', $prefix . '%')
-            ->orderByDesc('order_no')
-            ->value('order_no');
-
-        if ($last) {
-            $seq = intval(substr($last, -5)) + 1;
-        } else {
-            $seq = 1;
-        }
-
-        return $prefix . str_pad((string) $seq, 5, '0', STR_PAD_LEFT);
+        // ORD-2026-09-24-001 — daily sequence, resets each day
+        return NumberGenerator::next(self::class, 'order_no', 'ORD');
     }
 
     public static function generateTrackingNo(): string
     {
-        $dateStr = date('Ymd');
-        $prefix = 'KH' . $dateStr . '-';
-
-        // Daily sequence: KH{YYYYMMDD}-001, 002, ... resets to 001 each day.
-        // Only count rows already in the new format (no leading '#').
-        $max = 0;
-        self::where('tracking_ref', 'like', $prefix . '%')
-            ->pluck('tracking_ref')
-            ->each(function ($ref) use (&$max) {
-                $seq = (int) substr($ref, -3);
-                if ($seq > $max) {
-                    $max = $seq;
-                }
-            });
-
-        $num = $max + 1;
-        if ($num > 999) {
-            $num = 1;
-        }
-
-        return $prefix . str_pad((string) $num, 3, '0', STR_PAD_LEFT);
+        // KH-2026-09-24-001 — daily sequence, resets each day
+        return NumberGenerator::next(self::class, 'tracking_ref', 'KH');
     }
 
     public function customer()

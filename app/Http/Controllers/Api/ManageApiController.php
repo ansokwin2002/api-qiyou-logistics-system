@@ -17,6 +17,7 @@ use App\Models\Shipment;
 use App\Models\TrackingEvent;
 use App\Models\User;
 use App\Models\Warehouse;
+use App\Support\NumberGenerator;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -737,7 +738,7 @@ class ManageApiController extends Controller
         $items = $paginator->getCollection()->map(function ($d) {
             return [
                 'id' => $d->id,
-                'deliveryNo' => 'DLV-' . str_pad((string) $d->id, 5, '0', STR_PAD_LEFT),
+                'deliveryNo' => NumberGenerator::displayNo('DLV', $d),
                 'orderNo' => $d->order?->order_no ?? 'N/A',
                 'driverId' => $d->driver_id,
                 'driverName' => $d->driver?->name ?? 'Unassigned',
@@ -775,7 +776,7 @@ class ManageApiController extends Controller
 
         return $this->frontendOk([
             'id' => $d->id,
-            'deliveryNo' => 'DLV-' . str_pad((string) $d->id, 5, '0', STR_PAD_LEFT),
+            'deliveryNo' => NumberGenerator::displayNo('DLV', $d),
             'orderNo' => $d->order?->order_no ?? '',
             'driverId' => $d->driver_id,
             'driverName' => $d->driver?->name ?? '',
@@ -1065,7 +1066,7 @@ class ManageApiController extends Controller
     {
         return [
             'id' => $d->id,
-            'deliveryNo' => 'DLV-' . str_pad((string) $d->id, 5, '0', STR_PAD_LEFT),
+            'deliveryNo' => NumberGenerator::displayNo('DLV', $d),
             'orderNo' => $d->order?->order_no ?? 'N/A',
             'driverId' => $d->driver_id,
             'driverName' => $d->driver?->name ?? 'Unassigned',
@@ -1137,7 +1138,7 @@ class ManageApiController extends Controller
         $items = $paginator->getCollection()->map(function ($c) {
             return [
                 'id' => $c->id,
-                'codNo' => 'COD-' . str_pad((string) $c->id, 5, '0', STR_PAD_LEFT),
+                'codNo' => NumberGenerator::displayNo('COD', $c),
                 'orderNo' => $c->order?->order_no ?? 'N/A',
                 'type' => $c->collection_via === 'warehouse' ? 'Warehouse' : 'Delivery',
                 'codExpected' => (float) $c->expected_amount,
@@ -1190,7 +1191,7 @@ class ManageApiController extends Controller
         $items = $paginator->getCollection()->map(function ($c) {
             return [
                 'id' => $c->id,
-                'costNo' => 'CST-' . str_pad((string) $c->id, 5, '0', STR_PAD_LEFT),
+                'costNo' => NumberGenerator::displayNo('CST', $c),
                 'orderNo' => $c->order?->order_no ?? 'N/A',
                 'category' => $c->category === 'last_mile' ? 'Last-Mile' : ucfirst($c->category),
                 'amount' => (float) $c->amount,
@@ -1329,7 +1330,7 @@ class ManageApiController extends Controller
         $items = $paginator->getCollection()->map(function ($c) {
             return [
                 'id' => $c->id,
-                'declarationNo' => 'CUS-' . str_pad((string) $c->id, 5, '0', STR_PAD_LEFT),
+                'declarationNo' => NumberGenerator::displayNo('CUS', $c),
                 'orderNo' => $c->order?->order_no ?? 'N/A',
                 'englishItemName' => $c->english_item_name,
                 'hsCode' => $c->hs_code,
@@ -1387,7 +1388,7 @@ class ManageApiController extends Controller
 
             return [
                 'id' => $p->id,
-                'pickupNo' => 'PKP-' . str_pad((string) $p->id, 5, '0', STR_PAD_LEFT),
+                'pickupNo' => NumberGenerator::displayNo('PKP', $p),
                 'orderNo' => $p->order?->order_no ?? 'N/A',
                 'pickerName' => $p->receiver_name,
                 'pickerIdNo' => $p->receiver_id_number,
@@ -1531,7 +1532,7 @@ class ManageApiController extends Controller
 
             return [
                 'id' => $invoice?->id ?? $o->id,
-                'statementNo' => $invoice?->invoice_no ?? 'STM-' . str_pad((string) $o->id, 5, '0', STR_PAD_LEFT),
+                'statementNo' => $invoice?->invoice_no ?? NumberGenerator::displayNo('STM', $o),
                 'orderNo' => $o->order_no,
                 'customerName' => $o->customer?->name ?? 'N/A',
                 'origin' => $o->originWarehouse?->name ?? 'N/A',

@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Support\NumberGenerator;
 use Illuminate\Database\Eloquent\Model;
 
 class Package extends Model
@@ -55,7 +56,8 @@ class Package extends Model
 
     public static function generatePackageNo(): string
     {
-        return 'PKG-' . date('Y') . '-' . strtoupper(substr(bin2hex(random_bytes(4)), 0, 8));
+        // PKG-2026-09-24-001 — daily sequence, resets each day
+        return NumberGenerator::next(self::class, 'package_no', 'PKG');
     }
 
     public static function generateBarcode(): string
