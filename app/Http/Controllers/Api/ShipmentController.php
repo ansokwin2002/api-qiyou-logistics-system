@@ -145,7 +145,7 @@ class ShipmentController extends Controller
                 $shipment->order->update(['status' => Order::STATUS_IN_PROGRESS]);
 
                 foreach ($shipment->order->packages as $package) {
-                    $package->update(['current_warehouse_id' => $leg->destination_warehouse_id]);
+                    $package->update(['current_warehouse_id' => $leg->origin_warehouse_id]);
                     $package->setStatus(Package::STATUS_IN_TRANSIT, $leg->originWarehouse->name ?? null, "Shipment {$shipment->shipment_no} departed on leg {$leg->leg_no}");
                 }
             }
@@ -168,8 +168,9 @@ class ShipmentController extends Controller
             $shipment = $leg->shipment;
 
             $remainingPending = $shipment->legs()->where('status', 'pending')->count();
+            $isFinalLeg = $remainingPending === 0;
 
-            if ($remainingPending === 0) {
+            if ($isFinalLeg) {
                 $shipment->update([
                     'status' => 'completed',
                     'arrived_at' => now(),
@@ -179,11 +180,23 @@ class ShipmentController extends Controller
             if ($shipment->order) {
                 foreach ($shipment->order->packages as $package) {
                     $package->update(['current_warehouse_id' => $leg->destination_warehouse_id]);
-                    if ($shipment->order->fulfillment_method === 'pickup') {
-                        $package->setStatus(Package::STATUS_READY_FOR_PICKUP, $leg->destinationWarehouse->name ?? null, 'Shipment leg arrived');
-                    } else {
-                        $package->setStatus(Package::STATUS_ARRIVED, $leg->destinationWarehouse->name ?? null, 'Shipment leg arrived');
+
+                    if (! $isFinalLeg) {
+                        $package->setStatus(
+                            Package::STATUS_IN_TRANSIT,
+                            $leg->destinationWarehouse->name ?? null,
+                            'Arrived at transit warehouse, awaiting next leg'
+                        );
+                        continue;
                     }
+
+                    $package->setStatus(
+                        $shipment->order->fulfillment_method === 'pickup'
+                            ? Package::STATUS_READY_FOR_PICKUP
+                            : Package::STATUS_ARRIVED,
+                        $leg->destinationWarehouse->name ?? null,
+                        'Shipment leg arrived'
+                    );
                 }
             }
 

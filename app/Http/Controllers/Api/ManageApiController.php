@@ -14,9 +14,11 @@ use App\Models\Invoice;
 use App\Models\Order;
 use App\Models\Package;
 use App\Models\Shipment;
+use App\Models\ShipmentLeg;
 use App\Models\TrackingEvent;
 use App\Models\User;
 use App\Models\Warehouse;
+use App\Models\WarehouseBin;
 use App\Support\NumberGenerator;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -44,7 +46,12 @@ class ManageApiController extends Controller
         ], 200);
     }
 
-    protected function frontendError(string $message = 'Error', int $status = 400)
+    /**
+     * Response format compatible with frontend admin panel.
+     * Business errors stay on HTTP 200 with code '0' so the panel can show the
+     * message verbatim instead of the generic network error toast.
+     */
+    protected function frontendError(string $message = 'Error', int $status = 200)
     {
         return response()->json([
             'code' => '0',
@@ -96,7 +103,13 @@ class ManageApiController extends Controller
         }
 
         if ($status) {
-            $query->where('status', $this->normalizeStatus($status));
+            $variants = [
+                'RECEIVED' => ['received', 'confirmed'],
+                'IN TRANSIT' => ['in_transit', 'in_progress'],
+                'DELIVERED' => ['delivered', 'completed'],
+            ];
+            $statuses = $variants[strtoupper($status)] ?? [$this->normalizeStatus($status)];
+            $query->whereIn('status', $statuses);
         }
 
         if ($transportMethod) {
@@ -130,7 +143,7 @@ class ManageApiController extends Controller
         ])->find($id);
 
         if (! $order) {
-            return $this->frontendError('Order not found', 404);
+            return $this->frontendError('Order not found');
         }
 
         return $this->frontendOk($this->transformOrderForFrontend($order));
@@ -235,7 +248,7 @@ class ManageApiController extends Controller
         $order = Order::find($data['id'] ?? null);
 
         if (! $order) {
-            return $this->frontendError('Order not found', 404);
+            return $this->frontendError('Order not found');
         }
 
         $updateData = [];
@@ -266,6 +279,98 @@ class ManageApiController extends Controller
         ]);
     }
 
+    /**
+     * One dropdown on the admin Orders screen drives the status the customer
+     * sees on their home page: Order Placed -> Picked Up -> At Warehouse ->
+     * In Transit -> Arrived -> Delivered. Keeps order, packages and the
+     * customer timeline in sync.
+     */
+    public function orderSetStatus(Request $request)
+    {
+        $params = array_merge($request->all(), $this->getParams($request));
+
+        $order = Order::find($params['id'] ?? null);
+
+        if (! $order) {
+            return $this->frontendError('Order not found');
+        }
+
+        $status = $this->normalizeCustomerStatus((string) ($params['status'] ?? ''));
+
+        if (! $status) {
+            return $this->frontendError('Unknown status. Choose one of: Order Placed, Picked Up, At Warehouse, In Transit, Arrived, Delivered');
+        }
+
+        $label = $this->customerStatusLabel($status);
+        $note = trim((string) ($params['note'] ?? '')) ?: "Status updated to {$label}";
+
+        DB::transaction(function () use ($order, $status, $note, $params) {
+            $order->update(['status' => $status]);
+            Package::where('order_id', $order->id)->update(['status' => $status]);
+
+            $order->trackingEvents()->create([
+                'status' => $status,
+                'location' => $params['location'] ?? null,
+                'note' => $note,
+                'actor_name' => 'Admin',
+            ]);
+        });
+
+        return $this->frontendOk([
+            'status' => $status,
+            'label' => $this->customerStatusLabel($status),
+        ], 'Order status updated');
+    }
+
+    /**
+     * The six customer-facing statuses, accepting both display labels and
+     * stored keys.
+     */
+    protected function normalizeCustomerStatus(string $status): ?string
+    {
+        $map = [
+            'ORDER PLACED' => 'pending',
+            'PENDING' => 'pending',
+            'PICKED UP' => 'received',
+            'RECEIVED' => 'received',
+            'AT WAREHOUSE' => 'in_warehouse',
+            'IN WAREHOUSE' => 'in_warehouse',
+            'IN TRANSIT' => 'in_transit',
+            'ARRIVED' => 'arrived',
+            'DELIVERED' => 'delivered',
+        ];
+
+        $key = strtoupper(trim($status));
+
+        if ($key === '') {
+            return null;
+        }
+
+        if (isset($map[$key])) {
+            return $map[$key];
+        }
+
+        $canonical = strtolower(str_replace(' ', '_', $key));
+
+        return in_array($canonical, ['pending', 'received', 'in_warehouse', 'in_transit', 'arrived', 'delivered'], true)
+            ? $canonical
+            : null;
+    }
+
+    protected function customerStatusLabel(string $status): string
+    {
+        $map = [
+            'pending' => 'Order Placed',
+            'received' => 'Picked Up',
+            'in_warehouse' => 'At Warehouse',
+            'in_transit' => 'In Transit',
+            'arrived' => 'Arrived',
+            'delivered' => 'Delivered',
+        ];
+
+        return $map[$status] ?? ucfirst(str_replace('_', ' ', $status));
+    }
+
     public function orderDel(Request $request)
     {
         $params = $this->getParams($request);
@@ -273,7 +378,7 @@ class ManageApiController extends Controller
         $order = Order::find($id);
 
         if (! $order) {
-            return $this->frontendError('Order not found', 404);
+            return $this->frontendError('Order not found');
         }
 
         $order->delete();
@@ -359,7 +464,7 @@ class ManageApiController extends Controller
         $customer = Customer::find($id);
 
         if (! $customer) {
-            return $this->frontendError('Customer not found', 404);
+            return $this->frontendError('Customer not found');
         }
 
         $customer->delete();
@@ -428,7 +533,7 @@ class ManageApiController extends Controller
         $warehouse = Warehouse::with(['zones.racks.levels.bins'])->find($id);
 
         if (! $warehouse) {
-            return $this->frontendError('Warehouse not found', 404);
+            return $this->frontendError('Warehouse not found');
         }
 
         return $this->frontendOk($warehouse);
@@ -517,7 +622,7 @@ class ManageApiController extends Controller
         $warehouse = Warehouse::find($id);
 
         if (! $warehouse) {
-            return $this->frontendError('Warehouse not found', 404);
+            return $this->frontendError('Warehouse not found');
         }
 
         $warehouse->delete();
@@ -552,7 +657,7 @@ class ManageApiController extends Controller
         }
 
         if ($status = ($params['status'] ?? null)) {
-            $query->where('status', $this->normalizeStatus($status));
+            $query->where('status', $this->normalizePackageStatus($status));
         }
 
         $page = (int) ($params['page'] ?? 1);
@@ -586,39 +691,153 @@ class ManageApiController extends Controller
         ]);
     }
 
+    public function packageGet(Request $request)
+    {
+        $params = $this->getParams($request);
+        $package = $this->findPackage($params);
+
+        if (! $package) {
+            return $this->frontendError('Package not found');
+        }
+
+        return $this->frontendOk($this->packagePayload($package));
+    }
+
+    public function packagePayload(Package $package): array
+    {
+        $package->loadMissing(['order:id,order_no', 'currentWarehouse:id,name', 'currentBin:id,code']);
+        $dims = array_values(array_filter([(float) $package->length, (float) $package->width, (float) $package->height], fn ($v) => $v > 0));
+
+        return [
+            'id' => $package->id,
+            'barcode' => $package->barcode,
+            'orderNo' => $package->order?->order_no ?? '',
+            'itemName' => $package->description,
+            'quantity' => (int) $package->quantity,
+            'weight' => (float) $package->weight,
+            'dimensions' => $dims ? implode('x', $dims) : '',
+            'volumetricWeight' => (float) $package->volumetric_weight,
+            'chargeableWeight' => (float) $package->chargeable_weight,
+            'binLocation' => $package->currentBin?->code ?? $package->currentWarehouse?->name ?? '',
+            'status' => strtoupper(str_replace('_', ' ', $package->status)),
+        ];
+    }
+
     public function packageAdd(Request $request)
     {
-        $data = $request->validate([
-            'order_id' => ['required', 'exists:orders,id'],
-            'description' => ['nullable', 'string'],
-            'weight' => ['required', 'numeric', 'min:0'],
-            'length' => ['nullable', 'numeric', 'min:0'],
-            'width' => ['nullable', 'numeric', 'min:0'],
-            'height' => ['nullable', 'numeric', 'min:0'],
-            'quantity' => ['nullable', 'integer', 'min:1'],
-            'declared_value' => ['nullable', 'numeric', 'min:0'],
-        ]);
+        $params = $this->getParams($request);
+
+        $order = $this->resolveOrder($params);
+        if (is_string($order)) {
+            return $this->frontendError($order);
+        }
+        if (! $order) {
+            return $this->frontendError('Order No. is required');
+        }
+
+        $barcode = trim((string) ($params['barcode'] ?? ''));
+        if ($barcode === '') {
+            $barcode = Package::generateBarcode();
+        } elseif (Package::where('barcode', $barcode)->exists()) {
+            return $this->frontendError('Barcode already exists: ' . $barcode);
+        }
+
+        [$length, $width, $height] = $this->parseDimensions($params['dimensions'] ?? null);
 
         $package = new Package([
-            'order_id' => $data['order_id'],
+            'order_id' => $order->id,
             'package_no' => Package::generatePackageNo(),
-            'barcode' => Package::generateBarcode(),
-            'description' => $data['description'] ?? null,
-            'weight' => $data['weight'],
-            'length' => $data['length'] ?? 0,
-            'width' => $data['width'] ?? 0,
-            'height' => $data['height'] ?? 0,
-            'quantity' => $data['quantity'] ?? 1,
-            'declared_value' => $data['declared_value'] ?? 0,
+            'barcode' => $barcode,
+            'description' => $params['itemName'] ?? ($params['description'] ?? null),
+            'weight' => (float) ($params['weight'] ?? 0),
+            'length' => $length,
+            'width' => $width,
+            'height' => $height,
+            'quantity' => (int) ($params['quantity'] ?? 1),
+            'declared_value' => (float) ($params['declaredValue'] ?? ($params['declared_value'] ?? 0)),
+            'currency' => $order->currency ?? 'USD',
             'status' => Package::STATUS_PENDING,
+            'current_warehouse_id' => $order->origin_warehouse_id,
         ]);
         $package->calculateWeights();
         $package->save();
+
+        if (! empty($params['binLocation'])) {
+            $bin = $this->resolveBin($params['binLocation']);
+            if ($bin) {
+                $package->update(['current_bin_id' => $bin->id]);
+                $bin->update(['status' => 'occupied']);
+            }
+        }
 
         return $this->frontendOk([
             'id' => $package->id,
             'code' => '1',
             'message' => 'Package created',
+        ]);
+    }
+
+    public function packageEdit(Request $request)
+    {
+        $params = $this->getParams($request);
+        $package = $this->findPackage($params);
+
+        if (! $package) {
+            return $this->frontendError('Package not found');
+        }
+
+        if (! empty($params['barcode']) && $params['barcode'] !== $package->barcode) {
+            if (Package::where('barcode', $params['barcode'])->exists()) {
+                return $this->frontendError('Barcode already exists: ' . $params['barcode']);
+            }
+            $package->barcode = $params['barcode'];
+        }
+
+        if (! empty($params['orderNo'])) {
+            $order = Order::where('order_no', $params['orderNo'])->first();
+            if (! $order) {
+                return $this->frontendError('Order not found: ' . $params['orderNo']);
+            }
+            $package->order_id = $order->id;
+        }
+
+        if (array_key_exists('itemName', $params) || array_key_exists('description', $params)) {
+            $package->description = $params['itemName'] ?? ($params['description'] ?? null);
+        }
+        if (array_key_exists('quantity', $params) && $params['quantity'] !== null && $params['quantity'] !== '') {
+            $package->quantity = (int) $params['quantity'];
+        }
+        if (array_key_exists('weight', $params) && $params['weight'] !== null && $params['weight'] !== '') {
+            $package->weight = (float) $params['weight'];
+        }
+        if (array_key_exists('dimensions', $params) && $params['dimensions'] !== null && $params['dimensions'] !== '') {
+            [$length, $width, $height] = $this->parseDimensions($params['dimensions']);
+            $package->length = $length;
+            $package->width = $width;
+            $package->height = $height;
+        }
+
+        $package->calculateWeights();
+
+        $newStatus = isset($params['status']) && $params['status'] !== ''
+            ? $this->normalizePackageStatus($params['status'])
+            : null;
+
+        if ($newStatus && $newStatus !== $package->status) {
+            $package->save();
+            $package->setStatus(
+                $newStatus,
+                $package->currentBin?->code ?? $package->currentWarehouse?->name,
+                'Status updated from admin panel'
+            );
+        } else {
+            $package->save();
+        }
+
+        return $this->frontendOk([
+            'id' => $package->id,
+            'code' => '1',
+            'message' => 'Package updated',
         ]);
     }
 
@@ -628,7 +847,7 @@ class ManageApiController extends Controller
         $package = Package::find($id);
 
         if (! $package) {
-            return $this->frontendError('Package not found', 404);
+            return $this->frontendError('Package not found');
         }
 
         $package->delete();
@@ -637,6 +856,1230 @@ class ManageApiController extends Controller
             'code' => '1',
             'message' => 'Package deleted',
         ]);
+    }
+
+    // ---------------- Package flow actions ----------------
+
+    public function packageReceive(Request $request)
+    {
+        $params = $this->getParams($request);
+        $package = $this->findPackage($params);
+
+        if (! $package) {
+            return $this->frontendError('Package not found');
+        }
+
+        $warehouse = $this->resolveWarehouse($params)
+            ?: $package->currentWarehouse
+            ?: Warehouse::find($package->order?->origin_warehouse_id);
+
+        if (! $warehouse) {
+            return $this->frontendError('Warehouse is required');
+        }
+
+        if (isset($params['quantity']) && $params['quantity'] !== '' && $params['quantity'] !== null) {
+            $package->quantity = (int) $params['quantity'];
+        }
+        $package->current_warehouse_id = $warehouse->id;
+
+        if (! empty($params['binLocation'])) {
+            $bin = $this->resolveBin($params['binLocation']);
+            if (! $bin) {
+                return $this->frontendError('Bin not found: ' . $params['binLocation']);
+            }
+            $package->current_bin_id = $bin->id;
+            $bin->update(['status' => 'occupied']);
+        }
+
+        $package->save();
+        $package->setStatus(Package::STATUS_RECEIVED, $warehouse->name, $params['note'] ?? 'Package received at ' . $warehouse->name);
+
+        return $this->frontendOk($this->packagePayload($package->fresh()), 'Package received');
+    }
+
+    public function packageAssignBin(Request $request)
+    {
+        $params = $this->getParams($request);
+        $package = $this->findPackage($params);
+
+        if (! $package) {
+            return $this->frontendError('Package not found');
+        }
+
+        $bin = $this->resolveBin($params['binLocation'] ?? null);
+        if (! $bin) {
+            return $this->frontendError('Bin is required');
+        }
+
+        $warehouseId = $this->binWarehouseId($bin);
+        $package->current_bin_id = $bin->id;
+        $package->current_warehouse_id = $package->current_warehouse_id ?: $warehouseId;
+        $package->save();
+
+        $bin->update(['status' => 'occupied']);
+        $package->setStatus(Package::STATUS_IN_WAREHOUSE, $bin->code, $params['note'] ?? 'Stored in bin ' . $bin->code);
+
+        return $this->frontendOk($this->packagePayload($package->fresh()), 'Package stored in bin ' . $bin->code);
+    }
+
+    public function packageMove(Request $request)
+    {
+        $params = $this->getParams($request);
+        $package = $this->findPackage($params);
+
+        if (! $package) {
+            return $this->frontendError('Package not found');
+        }
+
+        $bin = ! empty($params['binLocation']) ? $this->resolveBin($params['binLocation']) : null;
+        if (! empty($params['binLocation']) && ! $bin) {
+            return $this->frontendError('Bin not found: ' . $params['binLocation']);
+        }
+
+        $warehouse = $this->resolveWarehouse($params) ?: ($bin ? Warehouse::find($this->binWarehouseId($bin)) : null);
+
+        if (! $bin && ! $warehouse) {
+            return $this->frontendError('Warehouse or bin is required');
+        }
+
+        if ($bin) {
+            $package->current_bin_id = $bin->id;
+            $bin->update(['status' => 'occupied']);
+        } else {
+            $package->current_bin_id = null;
+        }
+
+        if ($warehouse) {
+            $package->current_warehouse_id = $warehouse->id;
+        } elseif ($bin) {
+            $package->current_warehouse_id = $this->binWarehouseId($bin);
+        }
+
+        $package->save();
+
+        $location = $bin?->code ?? $warehouse?->name;
+        $package->setStatus(Package::STATUS_IN_WAREHOUSE, $location, $params['note'] ?? 'Package moved to ' . $location);
+
+        return $this->frontendOk($this->packagePayload($package->fresh()), 'Package moved');
+    }
+
+    public function shipmentGet(Request $request)
+    {
+        $params = $this->getParams($request);
+        $shipment = $this->findShipment($params);
+
+        if (! $shipment) {
+            return $this->frontendError('Shipment not found');
+        }
+
+        return $this->frontendOk($this->shipmentPayload($shipment));
+    }
+
+    public function shipmentPayload(Shipment $shipment): array
+    {
+        $shipment->loadMissing(['order:id,order_no', 'legs.originWarehouse:id,name', 'legs.destinationWarehouse:id,name']);
+        $firstLeg = $shipment->legs->first();
+        $lastLeg = $shipment->legs->last();
+
+        return [
+            'id' => $shipment->id,
+            'shipmentNo' => $shipment->shipment_no,
+            'orderNo' => $shipment->order?->order_no ?? 'N/A',
+            'carrier' => $shipment->carrier,
+            'origin' => $firstLeg?->originWarehouse?->name ?? 'N/A',
+            'destination' => $lastLeg?->destinationWarehouse?->name ?? 'N/A',
+            'transportMethod' => $firstLeg ? ucfirst($firstLeg->transport_method) : 'Air',
+            'departureTime' => $shipment->departed_at
+                ? strtotime($shipment->departed_at)
+                : ($firstLeg?->departure_date ? strtotime($firstLeg->departure_date) : null),
+            'arrivalEstimate' => $shipment->arrived_at
+                ? strtotime($shipment->arrived_at)
+                : ($lastLeg?->arrival_date ? strtotime($lastLeg->arrival_date) : null),
+            'status' => $this->displayShipmentStatus($shipment->status),
+            'remark' => $shipment->notes,
+            'legs' => $shipment->legs->map(fn (ShipmentLeg $leg) => [
+                'id' => $leg->id,
+                'legNo' => $leg->leg_no,
+                'origin' => $leg->originWarehouse?->name,
+                'originId' => $leg->origin_warehouse_id,
+                'destination' => $leg->destinationWarehouse?->name,
+                'destinationId' => $leg->destination_warehouse_id,
+                'transportMethod' => ucfirst($leg->transport_method),
+                'status' => strtoupper(str_replace('_', ' ', $leg->status)),
+                'departureTime' => $leg->departure_date ? strtotime($leg->departure_date) : null,
+                'arrivalTime' => $leg->arrival_date ? strtotime($leg->arrival_date) : null,
+                'notes' => $leg->notes,
+            ])->values(),
+        ];
+    }
+
+    public function shipmentAdd(Request $request)
+    {
+        $params = $this->getParams($request);
+
+        $order = $this->resolveOrder($params);
+        if (is_string($order)) {
+            return $this->frontendError($order);
+        }
+
+        $shipmentNo = trim((string) ($params['shipmentNo'] ?? ''));
+        if ($shipmentNo === '') {
+            $shipmentNo = Shipment::generateShipmentNo();
+        } elseif (Shipment::where('shipment_no', $shipmentNo)->exists()) {
+            return $this->frontendError('Shipment No. already exists: ' . $shipmentNo);
+        }
+
+        $originError = null;
+        $destinationError = null;
+        $this->legWarehouseId($params, 'origin', $originError);
+        $this->legWarehouseId($params, 'destination', $destinationError);
+        if ($originError) {
+            return $this->frontendError($originError);
+        }
+        if ($destinationError) {
+            return $this->frontendError($destinationError);
+        }
+
+        $shipment = Shipment::create([
+            'shipment_no' => $shipmentNo,
+            'order_id' => $order?->id,
+            'carrier' => $params['carrier'] ?? null,
+            'status' => $this->normalizeShipmentStatus($params['status'] ?? 'PENDING'),
+            'notes' => $params['remark'] ?? ($params['notes'] ?? null),
+        ]);
+
+        $legError = $this->upsertFirstLeg($shipment, $params, $order);
+        if ($legError) {
+            $shipment->delete();
+
+            return $this->frontendError($legError);
+        }
+
+        return $this->frontendOk($this->shipmentPayload($shipment->fresh('legs')), 'Shipment created');
+    }
+
+    public function shipmentEdit(Request $request)
+    {
+        $params = $this->getParams($request);
+        $shipment = $this->findShipment($params);
+
+        if (! $shipment) {
+            return $this->frontendError('Shipment not found');
+        }
+
+        if (! empty($params['shipmentNo']) && $params['shipmentNo'] !== $shipment->shipment_no) {
+            if (Shipment::where('shipment_no', $params['shipmentNo'])->exists()) {
+                return $this->frontendError('Shipment No. already exists: ' . $params['shipmentNo']);
+            }
+            $shipment->shipment_no = $params['shipmentNo'];
+        }
+
+        if (! empty($params['orderNo']) && $params['orderNo'] !== 'N/A') {
+            $order = Order::where('order_no', $params['orderNo'])->first();
+            if (! $order) {
+                return $this->frontendError('Order not found: ' . $params['orderNo']);
+            }
+            $shipment->order_id = $order->id;
+        }
+
+        if (array_key_exists('carrier', $params)) {
+            $shipment->carrier = $params['carrier'];
+        }
+        if (array_key_exists('remark', $params) || array_key_exists('notes', $params)) {
+            $shipment->notes = $params['remark'] ?? ($params['notes'] ?? $shipment->notes);
+        }
+        if (! empty($params['status'])) {
+            $shipment->status = $this->normalizeShipmentStatus($params['status']);
+        }
+
+        $shipment->save();
+
+        $legError = $this->upsertFirstLeg($shipment, $params, $shipment->order);
+        if ($legError) {
+            return $this->frontendError($legError);
+        }
+
+        return $this->frontendOk($this->shipmentPayload($shipment->fresh('legs')), 'Shipment updated');
+    }
+
+    public function shipmentDel(Request $request)
+    {
+        $params = $this->getParams($request);
+        $shipment = $this->findShipment($params);
+
+        if (! $shipment) {
+            return $this->frontendError('Shipment not found');
+        }
+
+        $shipment->delete();
+
+        return $this->frontendOk(['code' => '1', 'message' => 'Shipment deleted'], 'Shipment deleted');
+    }
+
+    public function shipmentAddLeg(Request $request)
+    {
+        $params = $this->getParams($request);
+        $shipment = $this->findShipment($params);
+
+        if (! $shipment) {
+            return $this->frontendError('Shipment not found');
+        }
+
+        $originId = $this->legWarehouseId($params, 'origin');
+        $destinationId = $this->legWarehouseId($params, 'destination');
+
+        if (! $originId || ! $destinationId) {
+            return $this->frontendError('Origin and destination warehouses are required');
+        }
+
+        $leg = $shipment->legs()->create([
+            'leg_no' => $shipment->legs()->count() + 1,
+            'origin_warehouse_id' => $originId,
+            'destination_warehouse_id' => $destinationId,
+            'transport_method' => strtolower($params['transportMethod'] ?? 'air'),
+            'status' => 'pending',
+            'departure_date' => $this->normalizeDate($params['departureTime'] ?? ($params['departureDate'] ?? null)),
+            'arrival_date' => $this->normalizeDate($params['arrivalEstimate'] ?? ($params['arrivalDate'] ?? null)),
+            'notes' => $params['notes'] ?? null,
+        ]);
+
+        return $this->frontendOk($this->shipmentPayload($shipment->fresh('legs')), 'Leg added');
+    }
+
+    public function shipmentDepart(Request $request)
+    {
+        $params = $this->getParams($request);
+        $shipment = $this->findShipment($params);
+
+        if (! $shipment) {
+            return $this->frontendError('Shipment not found');
+        }
+
+        return DB::transaction(function () use ($shipment) {
+            $leg = $shipment->legs()->where('status', 'pending')->orderBy('leg_no')->first();
+
+            if (! $leg) {
+                return $this->frontendError('No pending legs to depart');
+            }
+
+            $leg->update([
+                'status' => 'in_transit',
+                'departure_date' => now(),
+            ]);
+
+            $shipment->update([
+                'status' => 'in_transit',
+                'departed_at' => now(),
+            ]);
+
+            if ($shipment->order) {
+                $shipment->order->update(['status' => Order::STATUS_IN_PROGRESS]);
+
+                foreach ($shipment->order->packages as $package) {
+                    $package->update(['current_warehouse_id' => $leg->origin_warehouse_id]);
+                    $package->setStatus(
+                        Package::STATUS_IN_TRANSIT,
+                        $leg->originWarehouse?->name,
+                        "Shipment {$shipment->shipment_no} departed on leg {$leg->leg_no}"
+                    );
+                }
+            }
+
+            return $this->frontendOk($this->shipmentPayload($shipment->fresh('legs')), 'Shipment departed');
+        });
+    }
+
+    public function shipmentArrive(Request $request)
+    {
+        $params = $this->getParams($request);
+
+        $leg = null;
+        if (! empty($params['legId'])) {
+            $leg = ShipmentLeg::find($params['legId']);
+        } elseif (! empty($params['id']) || ! empty($params['shipmentId'])) {
+            $shipment = $this->findShipment($params);
+            $leg = $shipment?->legs()->where('status', 'in_transit')->orderBy('leg_no')->first()
+                ?: ($shipment?->legs()->where('status', 'pending')->orderBy('leg_no')->first());
+        }
+
+        if (! $leg) {
+            return $this->frontendError('No shipment leg to arrive');
+        }
+
+        return DB::transaction(function () use ($leg) {
+            $leg->update([
+                'status' => 'arrived',
+                'arrival_date' => now(),
+            ]);
+
+            $shipment = $leg->shipment;
+            $isFinalLeg = $shipment->legs()->where('status', 'pending')->count() === 0;
+
+            if ($isFinalLeg) {
+                $shipment->update([
+                    'status' => 'completed',
+                    'arrived_at' => now(),
+                ]);
+            }
+
+            if ($shipment->order) {
+                foreach ($shipment->order->packages as $package) {
+                    $package->update(['current_warehouse_id' => $leg->destination_warehouse_id]);
+
+                    if (! $isFinalLeg) {
+                        $package->setStatus(
+                            Package::STATUS_IN_TRANSIT,
+                            $leg->destinationWarehouse?->name,
+                            "Arrived at transit warehouse " . ($leg->destinationWarehouse?->name ?? 'n/a') . ", awaiting next leg"
+                        );
+                        continue;
+                    }
+
+                    $package->setStatus(
+                        $shipment->order->fulfillment_method === 'pickup'
+                            ? Package::STATUS_READY_FOR_PICKUP
+                            : Package::STATUS_ARRIVED,
+                        $leg->destinationWarehouse?->name,
+                        'Shipment leg arrived'
+                    );
+                }
+            }
+
+            return $this->frontendOk($this->shipmentPayload($shipment->fresh('legs')), 'Leg arrived');
+        });
+    }
+
+    // ==================== CUSTOMS (detail / edit / flow) ====================
+
+    public function customsGet(Request $request)
+    {
+        $params = $this->getParams($request);
+        $customs = CustomsDeclaration::find($params['id'] ?? $request->query('id'));
+
+        if (! $customs) {
+            return $this->frontendError('Declaration not found');
+        }
+
+        return $this->frontendOk($this->customsPayload($customs));
+    }
+
+    protected function customsPayload(CustomsDeclaration $customs): array
+    {
+        $customs->loadMissing('order:id,order_no');
+
+        return [
+            'id' => $customs->id,
+            'declarationNo' => NumberGenerator::displayNo('CUS', $customs),
+            'orderNo' => $customs->order?->order_no ?? 'N/A',
+            'receiverIdType' => $this->displayIdType($customs->receiver_id_type),
+            'receiverIdNo' => $customs->receiver_id_number,
+            'englishItemName' => $customs->english_item_name,
+            'hsCode' => $customs->hs_code,
+            'purpose' => $customs->purpose,
+            'material' => $customs->material,
+            'declaredValue' => (float) $customs->declared_value,
+            'currency' => $customs->currency,
+            'status' => ucfirst($customs->status),
+            'note' => $customs->notes,
+            'addTime' => $customs->created_at ? strtotime($customs->created_at) : time(),
+        ];
+    }
+
+    public function customsAdd(Request $request)
+    {
+        $params = $this->getParams($request);
+
+        $order = $this->resolveOrder($params);
+        if (is_string($order)) {
+            return $this->frontendError($order);
+        }
+        if (! $order) {
+            return $this->frontendError('Order No. is required');
+        }
+
+        $package = $order->packages()->first();
+
+        $customs = CustomsDeclaration::create([
+            'order_id' => $order->id,
+            'package_id' => $package?->id,
+            'receiver_id_type' => $this->normalizeIdType($params['receiverIdType'] ?? null) ?? 'national_id',
+            'receiver_id_number' => $params['receiverIdNo'] ?? null,
+            'english_item_name' => $params['englishItemName'] ?? null,
+            'hs_code' => $params['hsCode'] ?? null,
+            'purpose' => $params['purpose'] ?? null,
+            'material' => $params['material'] ?? null,
+            'declared_value' => (float) ($params['declaredValue'] ?? 0),
+            'currency' => $params['currency'] ?? 'USD',
+            'status' => $this->normalizeCustomsStatus($params['status'] ?? 'Pending'),
+            'notes' => $params['note'] ?? null,
+        ]);
+
+        if ($package && $package->status !== Package::STATUS_CUSTOMS) {
+            $package->setStatus(Package::STATUS_CUSTOMS, null, 'Customs declaration created');
+        }
+
+        return $this->frontendOk([
+            'id' => $customs->id,
+            'code' => '1',
+            'message' => 'Declaration created',
+        ]);
+    }
+
+    public function customsEdit(Request $request)
+    {
+        $params = $this->getParams($request);
+        $customs = CustomsDeclaration::find($params['id'] ?? null);
+
+        if (! $customs) {
+            return $this->frontendError('Declaration not found');
+        }
+
+        if (! empty($params['orderNo']) && $params['orderNo'] !== 'N/A') {
+            $order = Order::where('order_no', $params['orderNo'])->first();
+            if (! $order) {
+                return $this->frontendError('Order not found: ' . $params['orderNo']);
+            }
+            $customs->order_id = $order->id;
+            $customs->package_id = $order->packages()->value('id');
+        }
+
+        $fields = [
+            'receiver_id_number' => $params['receiverIdNo'] ?? null,
+            'english_item_name' => $params['englishItemName'] ?? null,
+            'hs_code' => $params['hsCode'] ?? null,
+            'purpose' => $params['purpose'] ?? null,
+            'material' => $params['material'] ?? null,
+            'declared_value' => $params['declaredValue'] ?? null,
+            'currency' => $params['currency'] ?? null,
+            'notes' => $params['note'] ?? null,
+        ];
+        foreach ($fields as $column => $value) {
+            if (array_key_exists($column, $params) && $value !== null) {
+                $customs->{$column} = $value;
+            }
+        }
+        if (array_key_exists('receiverIdType', $params)) {
+            $customs->receiver_id_type = $this->normalizeIdType($params['receiverIdType']) ?? $customs->receiver_id_type;
+        }
+
+        $customs->save();
+
+        if (isset($params['status']) && $params['status'] !== '') {
+            $status = $this->normalizeCustomsStatus($params['status']);
+            if ($status !== $customs->status) {
+                $this->applyCustomsStatus($customs, $status);
+            }
+        }
+
+        return $this->frontendOk($this->customsPayload($customs->fresh()), 'Declaration updated');
+    }
+
+    public function customsDel(Request $request)
+    {
+        $params = $this->getParams($request);
+        $customs = CustomsDeclaration::find($params['id'] ?? $request->query('id'));
+
+        if (! $customs) {
+            return $this->frontendError('Declaration not found');
+        }
+
+        $customs->delete();
+
+        return $this->frontendOk(['code' => '1', 'message' => 'Declaration deleted'], 'Declaration deleted');
+    }
+
+    public function customsDeclared(Request $request)
+    {
+        $params = $this->getParams($request);
+        $customs = CustomsDeclaration::find($params['id'] ?? null);
+
+        if (! $customs) {
+            return $this->frontendError('Declaration not found');
+        }
+        if ($customs->status === CustomsDeclaration::STATUS_CLEARED) {
+            return $this->frontendError('Declaration is already cleared');
+        }
+
+        $this->applyCustomsStatus($customs, CustomsDeclaration::STATUS_DECLARED);
+
+        return $this->frontendOk($this->customsPayload($customs->fresh()), 'Customs declared');
+    }
+
+    public function customsCleared(Request $request)
+    {
+        $params = $this->getParams($request);
+        $customs = CustomsDeclaration::find($params['id'] ?? null);
+
+        if (! $customs) {
+            return $this->frontendError('Declaration not found');
+        }
+
+        $this->applyCustomsStatus($customs, CustomsDeclaration::STATUS_CLEARED);
+
+        return $this->frontendOk($this->customsPayload($customs->fresh()), 'Customs cleared');
+    }
+
+    protected function applyCustomsStatus(CustomsDeclaration $customs, string $status): void
+    {
+        $customs->status = $status;
+
+        if ($status === CustomsDeclaration::STATUS_DECLARED && ! $customs->declared_at) {
+            $customs->declared_at = now();
+        }
+        if ($status === CustomsDeclaration::STATUS_CLEARED && ! $customs->cleared_at) {
+            $customs->cleared_at = now();
+        }
+
+        $customs->save();
+
+        $package = $customs->package_id ? Package::find($customs->package_id) : null;
+        if (! $package) {
+            return;
+        }
+
+        if ($status === CustomsDeclaration::STATUS_DECLARED && $package->status !== Package::STATUS_CUSTOMS) {
+            $package->setStatus(Package::STATUS_CUSTOMS, null, 'Customs declared');
+        }
+        if ($status === CustomsDeclaration::STATUS_CLEARED && $package->status !== Package::STATUS_CLEARED) {
+            $package->setStatus(Package::STATUS_CLEARED, null, 'Customs cleared');
+        }
+    }
+
+    // ==================== PICKUP (detail / edit / flow) ====================
+
+    public function pickupGet(Request $request)
+    {
+        $params = $this->getParams($request);
+        $pickup = Delivery::find($params['id'] ?? $request->query('id'));
+
+        if (! $pickup || $pickup->type !== Delivery::TYPE_PICKUP) {
+            return $this->frontendError('Pickup task not found');
+        }
+
+        return $this->frontendOk($this->pickupPayload($pickup));
+    }
+
+    protected function pickupPayload(Delivery $pickup): array
+    {
+        $pickup->loadMissing(['order:id,order_no', 'driver:id,name', 'package:id,quantity', 'codCollection']);
+
+        return [
+            'id' => $pickup->id,
+            'pickupNo' => NumberGenerator::displayNo('PKP', $pickup),
+            'orderNo' => $pickup->order?->order_no ?? 'N/A',
+            'pickerName' => $pickup->receiver_name,
+            'pickerIdType' => $this->displayIdType($pickup->receiver_id_type),
+            'pickerIdNo' => $pickup->receiver_id_number,
+            'quantity' => $pickup->package?->quantity ?? 1,
+            'codCollected' => (float) ($pickup->codCollection?->collected_amount ?? 0),
+            'operator' => $pickup->driver?->name ?? '',
+            'pickupTime' => $pickup->delivered_at ? strtotime($pickup->delivered_at) : null,
+            'status' => $this->displayPickupStatus($pickup->status),
+            'note' => $pickup->notes,
+            'addTime' => $pickup->created_at ? strtotime($pickup->created_at) : time(),
+        ];
+    }
+
+    public function pickupAdd(Request $request)
+    {
+        $params = $this->getParams($request);
+
+        $order = $this->resolveOrder($params);
+        if (is_string($order)) {
+            return $this->frontendError($order);
+        }
+        if (! $order) {
+            return $this->frontendError('Order No. is required');
+        }
+        if ($order->fulfillment_method !== 'pickup') {
+            return $this->frontendError('Order ' . $order->order_no . ' is set up for delivery, not self-pickup');
+        }
+        if (Delivery::where('order_id', $order->id)->where('type', Delivery::TYPE_PICKUP)->exists()) {
+            return $this->frontendError('A pickup task already exists for this order');
+        }
+
+        $status = $this->normalizePickupStatus($params['status'] ?? 'READY FOR PICKUP');
+        $packageId = $order->packages()->value('id');
+        $driverId = $this->resolveDriverUserId(['driverName' => $params['operator'] ?? null]);
+
+        if ($status === Delivery::STATUS_PICKED_UP && empty($params['pickerName'])) {
+            return $this->frontendError('Picker name is required to mark the task as picked up');
+        }
+
+        $pickup = Delivery::create([
+            'order_id' => $order->id,
+            'package_id' => $packageId,
+            'type' => Delivery::TYPE_PICKUP,
+            'driver_id' => $driverId,
+            'status' => $status,
+            'ready_at' => now(),
+            'assigned_at' => $driverId ? now() : null,
+            'delivered_at' => $status === Delivery::STATUS_PICKED_UP ? now() : $this->normalizeDate($params['pickupTime'] ?? null),
+            'receiver_name' => $params['pickerName'] ?? $order->receiver_name ?? null,
+            'receiver_id_type' => $this->normalizeIdType($params['pickerIdType'] ?? null),
+            'receiver_id_number' => $params['pickerIdNo'] ?? null,
+            'notes' => ! empty($params['operator']) ? 'Operator: ' . $params['operator'] : null,
+        ]);
+
+        if (! empty($params['quantity']) && $packageId) {
+            Package::where('id', $packageId)->update(['quantity' => (int) $params['quantity']]);
+        }
+
+        if ($order->payment_method === 'cod' || (float) ($params['codCollected'] ?? 0) > 0) {
+            $this->syncDeliveryCod($pickup, $order, [
+                'codExpected' => $order->payment_method === 'cod' ? (float) $order->estimated_fee : (float) ($params['codCollected'] ?? 0),
+                'codCollected' => (float) ($params['codCollected'] ?? 0),
+            ]);
+        }
+
+        if ($status === Delivery::STATUS_PICKED_UP) {
+            $result = $this->completeDeliveryTask($pickup, $params, 'warehouse');
+            if (is_string($result)) {
+                $pickup->delete();
+
+                return $this->frontendError($result);
+            }
+        } elseif ($packageId) {
+            $package = Package::find($packageId);
+            if ($package && $package->status !== Package::STATUS_READY_FOR_PICKUP && $package->status !== Package::STATUS_PICKED_UP) {
+                $package->setStatus(Package::STATUS_READY_FOR_PICKUP, null, 'Ready for pickup');
+            }
+        }
+
+        return $this->frontendOk([
+            'id' => $pickup->id,
+            'code' => '1',
+            'message' => 'Pickup task created',
+        ]);
+    }
+
+    public function pickupEdit(Request $request)
+    {
+        $params = $this->getParams($request);
+        $pickup = Delivery::find($params['id'] ?? null);
+
+        if (! $pickup || $pickup->type !== Delivery::TYPE_PICKUP) {
+            return $this->frontendError('Pickup task not found');
+        }
+
+        $fields = [
+            'receiver_name' => $params['pickerName'] ?? null,
+            'receiver_id_number' => $params['pickerIdNo'] ?? null,
+            'notes' => $params['note'] ?? null,
+        ];
+        foreach ($fields as $column => $value) {
+            if ($value !== null && $value !== '') {
+                $pickup->{$column} = $value;
+            }
+        }
+        if (array_key_exists('pickerIdType', $params)) {
+            $pickup->receiver_id_type = $this->normalizeIdType($params['pickerIdType']) ?? $pickup->receiver_id_type;
+        }
+        if (! empty($params['operator'])) {
+            $driverId = $this->resolveDriverUserId(['driverName' => $params['operator']]);
+            if ($driverId) {
+                $pickup->driver_id = $driverId;
+            }
+        }
+        if (isset($params['pickupTime']) && $params['pickupTime'] !== '') {
+            $pickup->delivered_at = $this->normalizeDate($params['pickupTime']);
+        }
+
+        $pickup->save();
+
+        if (! empty($params['quantity']) && $pickup->package_id) {
+            Package::where('id', $pickup->package_id)->update(['quantity' => (int) $params['quantity']]);
+        }
+
+        if ($pickup->order && (array_key_exists('codCollected', $params) || array_key_exists('codExpected', $params))) {
+            $expected = (float) ($params['codExpected'] ?? ($pickup->codCollection?->expected_amount ?? ($pickup->order->payment_method === 'cod' ? (float) $pickup->order->estimated_fee : (float) ($params['codCollected'] ?? 0))));
+            $this->syncDeliveryCod($pickup, $pickup->order, [
+                'codExpected' => $expected,
+                'codCollected' => (float) ($params['codCollected'] ?? ($pickup->codCollection?->collected_amount ?? 0)),
+            ]);
+        }
+
+        $statusChanged = isset($params['status']) && $params['status'] !== '';
+        if ($statusChanged) {
+            $newStatus = $this->normalizePickupStatus($params['status']);
+            if ($newStatus === Delivery::STATUS_PICKED_UP && $pickup->status !== Delivery::STATUS_PICKED_UP) {
+                $result = $this->completeDeliveryTask($pickup, $params, 'warehouse');
+                if (is_string($result)) {
+                    return $this->frontendError($result);
+                }
+            } elseif ($newStatus !== $pickup->status) {
+                $pickup->update(['status' => $newStatus]);
+            }
+        }
+
+        return $this->frontendOk($this->pickupPayload($pickup->fresh()), 'Pickup updated');
+    }
+
+    public function pickupDel(Request $request)
+    {
+        $params = $this->getParams($request);
+        $pickup = Delivery::find($params['id'] ?? $request->query('id'));
+
+        if (! $pickup) {
+            return $this->frontendError('Pickup task not found');
+        }
+
+        $pickup->delete();
+
+        return $this->frontendOk(['code' => '1', 'message' => 'Pickup deleted'], 'Pickup deleted');
+    }
+
+    public function pickupComplete(Request $request)
+    {
+        $params = $this->getParams($request);
+        $pickup = Delivery::find($params['id'] ?? null);
+
+        if (! $pickup) {
+            return $this->frontendError('Pickup task not found');
+        }
+        if ($pickup->type !== Delivery::TYPE_PICKUP) {
+            return $this->frontendError('This is not a pickup task');
+        }
+
+        $result = $this->completeDeliveryTask($pickup, $params, 'warehouse');
+        if (is_string($result)) {
+            return $this->frontendError($result);
+        }
+
+        return $this->frontendOk($this->pickupPayload($pickup->fresh()), 'Pickup completed');
+    }
+
+    // ==================== COD (detail / edit / settle) ====================
+
+    public function codGet(Request $request)
+    {
+        $params = $this->getParams($request);
+        $cod = CodCollection::find($params['id'] ?? $request->query('id'));
+
+        if (! $cod) {
+            return $this->frontendError('COD record not found');
+        }
+
+        return $this->frontendOk($this->codPayload($cod));
+    }
+
+    protected function codPayload(CodCollection $cod): array
+    {
+        $cod->loadMissing('order:id,order_no');
+
+        return [
+            'id' => $cod->id,
+            'codNo' => NumberGenerator::displayNo('COD', $cod),
+            'orderNo' => $cod->order?->order_no ?? 'N/A',
+            'type' => $cod->collection_via === 'warehouse' ? 'Warehouse' : 'Delivery',
+            'codExpected' => (float) $cod->expected_amount,
+            'codCollected' => (float) $cod->collected_amount,
+            'codDifference' => (float) $cod->difference,
+            'settlementStatus' => ucfirst($cod->settlement_status),
+            'collectTime' => $cod->collected_at ? strtotime($cod->collected_at) : null,
+            'note' => $cod->notes,
+            'addTime' => $cod->created_at ? strtotime($cod->created_at) : time(),
+        ];
+    }
+
+    public function codAdd(Request $request)
+    {
+        $params = $this->getParams($request);
+
+        $order = $this->resolveOrder($params);
+        if (is_string($order)) {
+            return $this->frontendError($order);
+        }
+        if (! $order) {
+            return $this->frontendError('Order No. is required');
+        }
+
+        $expected = (float) ($params['codExpected'] ?? ($order->payment_method === 'cod' ? (float) $order->estimated_fee : 0));
+        $collected = (float) ($params['codCollected'] ?? 0);
+        $settlement = $this->normalizeSettlementStatus($params['settlementStatus'] ?? null)
+            ?? ($collected >= $expected && $collected > 0 ? CodCollection::STATUS_COLLECTED : CodCollection::STATUS_PENDING);
+
+        $cod = CodCollection::create([
+            'order_id' => $order->id,
+            'package_id' => $order->packages()->value('id'),
+            'delivery_id' => $order->deliveries()->value('id'),
+            'expected_amount' => $expected,
+            'collected_amount' => $collected,
+            'difference' => round($expected - $collected, 2),
+            'collection_via' => strtolower($params['type'] ?? 'delivery') === 'warehouse' ? 'warehouse' : 'driver',
+            'settlement_status' => $settlement,
+            'collected_at' => $this->normalizeDate($params['collectTime'] ?? null) ?? ($collected > 0 ? now() : null),
+            'notes' => $params['note'] ?? null,
+        ]);
+
+        return $this->frontendOk([
+            'id' => $cod->id,
+            'code' => '1',
+            'message' => 'COD record created',
+        ]);
+    }
+
+    public function codEdit(Request $request)
+    {
+        $params = $this->getParams($request);
+        $cod = CodCollection::find($params['id'] ?? null);
+
+        if (! $cod) {
+            return $this->frontendError('COD record not found');
+        }
+
+        if (! empty($params['orderNo']) && $params['orderNo'] !== 'N/A') {
+            $order = Order::where('order_no', $params['orderNo'])->first();
+            if (! $order) {
+                return $this->frontendError('Order not found: ' . $params['orderNo']);
+            }
+            $cod->order_id = $order->id;
+            $cod->package_id = $order->packages()->value('id');
+        }
+
+        if (array_key_exists('codExpected', $params) && $params['codExpected'] !== '' && $params['codExpected'] !== null) {
+            $cod->expected_amount = (float) $params['codExpected'];
+        }
+        if (array_key_exists('codCollected', $params) && $params['codCollected'] !== '' && $params['codCollected'] !== null) {
+            $cod->collected_amount = (float) $params['codCollected'];
+            if (! $cod->collected_at) {
+                $cod->collected_at = now();
+            }
+        }
+        if (array_key_exists('type', $params) && $params['type'] !== null && $params['type'] !== '') {
+            $cod->collection_via = strtolower($params['type']) === 'warehouse' ? 'warehouse' : 'driver';
+        }
+        if (array_key_exists('note', $params) && $params['note'] !== null) {
+            $cod->notes = $params['note'];
+        }
+        if (array_key_exists('collectTime', $params) && $params['collectTime'] !== '' && $params['collectTime'] !== null) {
+            $cod->collected_at = $this->normalizeDate($params['collectTime']);
+        }
+        if (isset($params['settlementStatus']) && $params['settlementStatus'] !== '') {
+            $settlement = $this->normalizeSettlementStatus($params['settlementStatus']);
+            if ($settlement) {
+                $cod->settlement_status = $settlement;
+            }
+        }
+
+        $cod->difference = round((float) $cod->expected_amount - (float) $cod->collected_amount, 2);
+        $cod->save();
+
+        return $this->frontendOk($this->codPayload($cod->fresh()), 'COD record updated');
+    }
+
+    public function codDel(Request $request)
+    {
+        $params = $this->getParams($request);
+        $cod = CodCollection::find($params['id'] ?? $request->query('id'));
+
+        if (! $cod) {
+            return $this->frontendError('COD record not found');
+        }
+
+        $cod->delete();
+
+        return $this->frontendOk(['code' => '1', 'message' => 'COD record deleted'], 'COD record deleted');
+    }
+
+    public function codSettle(Request $request)
+    {
+        $params = $this->getParams($request);
+        $cod = CodCollection::find($params['id'] ?? null);
+
+        if (! $cod) {
+            return $this->frontendError('COD record not found');
+        }
+        if ($cod->settlement_status === CodCollection::STATUS_SETTLED) {
+            return $this->frontendError('COD record is already settled');
+        }
+
+        $cod->update(['settlement_status' => CodCollection::STATUS_SETTLED]);
+
+        return $this->frontendOk($this->codPayload($cod->fresh()), 'COD marked as settled');
+    }
+
+    // ==================== COST (detail / edit) ====================
+
+    public function costGet(Request $request)
+    {
+        $params = $this->getParams($request);
+        $cost = Cost::find($params['id'] ?? $request->query('id'));
+
+        if (! $cost) {
+            return $this->frontendError('Cost record not found');
+        }
+
+        return $this->frontendOk($this->costPayload($cost));
+    }
+
+    protected function costPayload(Cost $cost): array
+    {
+        $cost->loadMissing('order:id,order_no');
+
+        return [
+            'id' => $cost->id,
+            'costNo' => NumberGenerator::displayNo('CST', $cost),
+            'orderNo' => $cost->order?->order_no ?? 'N/A',
+            'category' => $cost->category === 'last_mile' ? 'Last-Mile' : ucfirst($cost->category),
+            'amount' => (float) $cost->amount,
+            'currency' => $cost->currency,
+            'note' => $cost->description,
+            'costDate' => $cost->cost_date ? strtotime($cost->cost_date) : null,
+            'addTime' => $cost->created_at ? strtotime($cost->created_at) : time(),
+        ];
+    }
+
+    public function costEdit(Request $request)
+    {
+        $params = $this->getParams($request);
+        $cost = Cost::find($params['id'] ?? null);
+
+        if (! $cost) {
+            return $this->frontendError('Cost record not found');
+        }
+
+        if (! empty($params['orderNo']) && $params['orderNo'] !== 'N/A') {
+            $order = Order::where('order_no', $params['orderNo'])->first();
+            if (! $order) {
+                return $this->frontendError('Order not found: ' . $params['orderNo']);
+            }
+            $cost->order_id = $order->id;
+        }
+
+        if (array_key_exists('category', $params) && $params['category']) {
+            $cost->category = $this->normalizeCostCategory($params['category']);
+        }
+        if (array_key_exists('amount', $params) && $params['amount'] !== '' && $params['amount'] !== null) {
+            $cost->amount = (float) $params['amount'];
+        }
+        if (array_key_exists('currency', $params) && $params['currency']) {
+            $cost->currency = $params['currency'];
+        }
+        if (array_key_exists('note', $params)) {
+            $cost->description = $params['note'];
+        }
+        if (array_key_exists('costDate', $params) && $params['costDate'] !== '' && $params['costDate'] !== null) {
+            $cost->cost_date = $this->normalizeDateOnly($params['costDate']);
+        }
+
+        $cost->save();
+
+        return $this->frontendOk($this->costPayload($cost->fresh()), 'Cost updated');
+    }
+
+    // ==================== TRACKING (detail / create / edit) ====================
+
+    public function trackingGet(Request $request)
+    {
+        $params = $this->getParams($request);
+        $event = TrackingEvent::find($params['id'] ?? $request->query('id'));
+
+        if (! $event) {
+            return $this->frontendError('Tracking event not found');
+        }
+
+        return $this->frontendOk($this->trackingPayload($event));
+    }
+
+    protected function trackingPayload(TrackingEvent $event): array
+    {
+        $event->loadMissing(['actor:id,name', 'trackable']);
+
+        $trackable = $event->trackable;
+        $order = null;
+        if ($trackable instanceof Package) {
+            $order = $trackable->order;
+        } elseif ($trackable instanceof Order) {
+            $order = $trackable;
+        }
+
+        return [
+            'id' => $event->id,
+            'trackingNo' => $event->trackable instanceof Order
+                ? ($event->trackable->tracking_ref ?? 'N/A')
+                : ($event->trackable instanceof Package ? $event->trackable->package_no : 'N/A'),
+            'packageNo' => $trackable instanceof Package ? $trackable->package_no : '',
+            'orderNo' => $order?->order_no ?? 'N/A',
+            'status' => strtoupper(str_replace('_', ' ', $event->status)),
+            'location' => $event->location,
+            'operator' => $event->actor?->name ?? $event->actor_name,
+            'note' => $event->note,
+            'logTime' => $event->created_at ? (int) round($event->created_at->getTimestamp() * 1000) : (int) round(now()->getTimestamp() * 1000),
+        ];
+    }
+
+    public function trackingAdd(Request $request)
+    {
+        $params = $this->getParams($request);
+
+        $order = $this->resolveOrder($params);
+        if (is_string($order)) {
+            return $this->frontendError($order);
+        }
+
+        $package = null;
+        if (! $order && ! empty($params['packageNo'])) {
+            $package = Package::where('package_no', $params['packageNo'])
+                ->orWhere('barcode', $params['packageNo'])
+                ->first();
+            if (! $package) {
+                return $this->frontendError('Package not found: ' . $params['packageNo']);
+            }
+            $order = $package->order;
+        }
+
+        if (! $order && ! $package) {
+            return $this->frontendError('Order No. or package No. is required');
+        }
+
+        $payload = $this->trackingEventPayload($params);
+
+        if ($order) {
+            $event = $order->trackingEvents()->create($payload);
+            if ($package) {
+                $package->trackingEvents()->create($payload);
+            }
+        } else {
+            $event = $package->trackingEvents()->create($payload);
+        }
+
+        if (isset($params['logTime']) && $params['logTime'] !== '' && $params['logTime'] !== null) {
+            $event->created_at = $this->normalizeDate($params['logTime']);
+            $event->save();
+        }
+
+        return $this->frontendOk([
+            'id' => $event->id,
+            'code' => '1',
+            'message' => 'Tracking event created',
+        ]);
+    }
+
+    public function trackingEdit(Request $request)
+    {
+        $params = $this->getParams($request);
+        $event = TrackingEvent::find($params['id'] ?? null);
+
+        if (! $event) {
+            return $this->frontendError('Tracking event not found');
+        }
+
+        $event->status = $this->normalizeEventStatus($params['status'] ?? $event->status);
+        if (array_key_exists('location', $params)) {
+            $event->location = $params['location'];
+        }
+        if (array_key_exists('note', $params)) {
+            $event->note = $params['note'];
+        }
+        if (array_key_exists('operator', $params) && $params['operator']) {
+            $event->actor_name = $params['operator'];
+            $event->actor_id = User::where('name', 'like', '%' . $params['operator'] . '%')->value('id');
+        }
+        if (isset($params['logTime']) && $params['logTime'] !== '' && $params['logTime'] !== null) {
+            $event->created_at = $this->normalizeDate($params['logTime']);
+        }
+        $event->save();
+
+        return $this->frontendOk($this->trackingPayload($event->fresh()), 'Tracking event updated');
+    }
+
+    public function trackingDel(Request $request)
+    {
+        $params = $this->getParams($request);
+        $event = TrackingEvent::find($params['id'] ?? $request->query('id'));
+
+        if (! $event) {
+            return $this->frontendError('Tracking event not found');
+        }
+
+        $event->delete();
+
+        return $this->frontendOk(['code' => '1', 'message' => 'Tracking event deleted'], 'Tracking event deleted');
+    }
+
+    // ==================== DELIVERY FLOW ACTIONS ====================
+
+    public function deliveryStart(Request $request)
+    {
+        $params = $this->getParams($request);
+        $delivery = Delivery::find($params['id'] ?? null);
+
+        if (! $delivery) {
+            return $this->frontendError('Delivery task not found');
+        }
+        if (! $delivery->driver_id) {
+            return $this->frontendError('Assign a driver before starting the delivery');
+        }
+        if (! in_array($delivery->status, [Delivery::STATUS_PENDING, Delivery::STATUS_FAILED], true)) {
+            return $this->frontendError('Delivery task is already ' . str_replace('_', ' ', $delivery->status));
+        }
+
+        $delivery->update([
+            'status' => Delivery::STATUS_OUT_FOR_DELIVERY,
+            'assigned_at' => $delivery->assigned_at ?? now(),
+        ]);
+
+        if ($delivery->package && $delivery->package->status !== Package::STATUS_OUT_FOR_DELIVERY) {
+            $delivery->package->setStatus(Package::STATUS_OUT_FOR_DELIVERY, null, 'Out for delivery');
+        }
+
+        if ($delivery->order && $delivery->order->status !== Order::STATUS_COMPLETED) {
+            $delivery->order->update(['status' => Order::STATUS_IN_PROGRESS]);
+        }
+
+        return $this->frontendOk($this->deliveryRowPayload($delivery->fresh(['order', 'driver', 'package', 'codCollection'])), 'Delivery started');
+    }
+
+    public function deliveryComplete(Request $request)
+    {
+        $params = $this->getParams($request);
+        $delivery = Delivery::find($params['id'] ?? null);
+
+        if (! $delivery) {
+            return $this->frontendError('Delivery task not found');
+        }
+        if ($delivery->type !== Delivery::TYPE_DELIVERY) {
+            return $this->frontendError('This is not a delivery task');
+        }
+
+        $result = $this->completeDeliveryTask($delivery, $params, 'driver');
+        if (is_string($result)) {
+            return $this->frontendError($result);
+        }
+
+        return $this->frontendOk($this->deliveryRowPayload($delivery->fresh(['order', 'driver', 'package', 'codCollection'])), 'Delivery completed');
+    }
+
+    public function deliveryFail(Request $request)
+    {
+        $params = $this->getParams($request);
+        $delivery = Delivery::find($params['id'] ?? null);
+
+        if (! $delivery) {
+            return $this->frontendError('Delivery task not found');
+        }
+
+        $reason = trim((string) ($params['issueReason'] ?? ($params['issue_reason'] ?? '')));
+        if ($reason === '') {
+            return $this->frontendError('Issue reason is required');
+        }
+
+        $delivery->update([
+            'status' => Delivery::STATUS_FAILED,
+            'issue_reason' => $reason,
+            'notes' => $params['note'] ?? ($params['notes'] ?? $delivery->notes),
+        ]);
+
+        if ($delivery->package) {
+            $delivery->package->setStatus(
+                $delivery->type === Delivery::TYPE_PICKUP ? Package::STATUS_READY_FOR_PICKUP : Package::STATUS_ARRIVED,
+                null,
+                'Delivery failed: ' . $reason
+            );
+        }
+
+        return $this->frontendOk($this->deliveryRowPayload($delivery->fresh(['order', 'driver', 'package', 'codCollection'])), 'Delivery marked as failed');
     }
 
     // ==================== SHIPMENT ====================
@@ -771,7 +2214,7 @@ class ManageApiController extends Controller
         $d = Delivery::with(['order:id,order_no', 'driver:id,name,phone', 'package:id,quantity', 'codCollection'])->find($id);
 
         if (! $d) {
-            return $this->frontendError('Delivery not found', 404);
+            return $this->frontendError('Delivery not found');
         }
 
         return $this->frontendOk([
@@ -860,7 +2303,7 @@ class ManageApiController extends Controller
         $delivery = Delivery::find($id);
 
         if (! $delivery) {
-            return $this->frontendError('Delivery not found', 404);
+            return $this->frontendError('Delivery not found');
         }
 
         $driverId = $delivery->driver_id;
@@ -907,7 +2350,7 @@ class ManageApiController extends Controller
         $delivery = Delivery::find($id);
 
         if (! $delivery) {
-            return $this->frontendError('Delivery not found', 404);
+            return $this->frontendError('Delivery not found');
         }
 
         $delivery->delete();
@@ -1015,8 +2458,8 @@ class ManageApiController extends Controller
                 'codExpected' => $order->payment_method === 'cod' ? (float) $order->estimated_fee : 0,
                 'status' => $this->displayOrderStatus($order->status),
                 'label' => $order->order_no
-                    . ($order->tracking_ref ? ' · ' . $order->tracking_ref : '')
-                    . ($order->receiver_name ? ' · ' . $order->receiver_name : ''),
+                    . ($order->tracking_ref ? ' Ãƒâ€šÃ‚Â· ' . $order->tracking_ref : '')
+                    . ($order->receiver_name ? ' Ãƒâ€šÃ‚Â· ' . $order->receiver_name : ''),
             ];
         })->values();
 
@@ -1030,7 +2473,7 @@ class ManageApiController extends Controller
         $delivery = Delivery::find($id);
 
         if (! $delivery) {
-            return $this->frontendError('Delivery not found', 404);
+            return $this->frontendError('Delivery not found');
         }
 
         $driverId = $this->resolveDriverUserId($params);
@@ -1251,17 +2694,26 @@ class ManageApiController extends Controller
 
     public function costAdd(Request $request)
     {
-        $data = $request->validate([
-            'order_id' => ['nullable', 'exists:orders,id'],
-            'shipment_id' => ['nullable', 'exists:shipments,id'],
-            'category' => ['nullable', 'string', 'max:255'],
-            'amount' => ['required', 'numeric', 'min:0'],
-            'currency' => ['nullable', 'string', 'max:10'],
-            'description' => ['nullable', 'string'],
-            'cost_date' => ['nullable', 'date'],
-        ]);
+        $params = $this->getParams($request);
 
-        $cost = Cost::create($data);
+        if (! isset($params['amount']) || $params['amount'] === '' || $params['amount'] === null) {
+            return $this->frontendError('Amount is required');
+        }
+
+        $order = $this->resolveOrder($params);
+        if (is_string($order)) {
+            return $this->frontendError($order);
+        }
+
+        $cost = Cost::create([
+            'order_id' => $order?->id,
+            'shipment_id' => ! empty($params['shipmentId']) ? (int) $params['shipmentId'] : null,
+            'category' => $this->normalizeCostCategory($params['category'] ?? 'other'),
+            'amount' => (float) $params['amount'],
+            'currency' => $params['currency'] ?? 'USD',
+            'description' => $params['note'] ?? null,
+            'cost_date' => $this->normalizeDateOnly($params['costDate'] ?? null),
+        ]);
 
         return $this->frontendOk([
             'id' => $cost->id,
@@ -1276,7 +2728,7 @@ class ManageApiController extends Controller
         $cost = Cost::find($id);
 
         if (! $cost) {
-            return $this->frontendError('Cost not found', 404);
+            return $this->frontendError('Cost not found');
         }
 
         $cost->delete();
@@ -1309,7 +2761,7 @@ class ManageApiController extends Controller
         }
 
         if ($status = ($params['status'] ?? null)) {
-            $query->where('status', $this->normalizeStatus($status));
+            $query->whereIn('status', $this->normalizeEventStatuses($status));
         }
 
         $page = (int) ($params['page'] ?? 1);
@@ -1736,7 +3188,7 @@ class ManageApiController extends Controller
     {
         $map = [
             'PENDING' => 'pending',
-            'RECEIVED' => 'confirmed',
+            'RECEIVED' => 'received',
             'IN WAREHOUSE' => 'in_warehouse',
             'CUSTOMS' => 'customs',
             'CLEARED' => 'cleared',
@@ -1830,5 +3282,524 @@ class ManageApiController extends Controller
             return null;
         }
         return Warehouse::where('name', 'like', "%{$name}%")->value('id');
+    }
+
+    // ==================== FLOW HELPERS ====================
+
+    protected function findPackage(array $params): ?Package
+    {
+        if (! empty($params['id'])) {
+            $package = Package::find($params['id']);
+            if ($package) {
+                return $package;
+            }
+        }
+
+        foreach (['barcode', 'packageNo'] as $key) {
+            if (! empty($params[$key])) {
+                return Package::where('barcode', $params[$key])
+                    ->orWhere('package_no', $params[$key])
+                    ->first();
+            }
+        }
+
+        return null;
+    }
+
+    protected function findShipment(array $params): ?Shipment
+    {
+        if (! empty($params['shipmentId'])) {
+            return Shipment::find($params['shipmentId']);
+        }
+        if (! empty($params['id'])) {
+            $shipment = Shipment::find($params['id']);
+            if ($shipment) {
+                return $shipment;
+            }
+        }
+        if (! empty($params['shipmentNo'])) {
+            return Shipment::where('shipment_no', $params['shipmentNo'])->first();
+        }
+
+        return null;
+    }
+
+    /**
+     * Resolve an order from { orderNo, order_id }.
+     * Returns the order, null when neither key was supplied, or an error string.
+     */
+    protected function resolveOrder(array $params): Order|string|null
+    {
+        $orderNo = trim((string) ($params['orderNo'] ?? ''));
+
+        if ($orderNo !== '' && $orderNo !== 'N/A') {
+            $order = Order::where('order_no', $orderNo)->first();
+
+            return $order ?: 'Order not found: ' . $orderNo;
+        }
+
+        if (! empty($params['order_id'])) {
+            $order = Order::find($params['order_id']);
+
+            return $order ?: 'Order not found';
+        }
+
+        return null;
+    }
+
+    /**
+     * Parse "10x20x30", "10*20*30" or [10, 20, 30] into [length, width, height].
+     */
+    protected function parseDimensions($value): array
+    {
+        if (is_array($value)) {
+            $numbers = array_slice($value, 0, 3);
+        } else {
+            preg_match_all('/\d+(?:\.\d+)?/', (string) $value, $matches);
+            $numbers = $matches[0] ?? [];
+        }
+
+        $numbers = array_map('floatval', array_slice($numbers, 0, 3));
+        while (count($numbers) < 3) {
+            $numbers[] = 0;
+        }
+
+        return $numbers;
+    }
+
+    protected function resolveWarehouse(array $params): ?Warehouse
+    {
+        if (! empty($params['warehouseId'])) {
+            return Warehouse::find($params['warehouseId']);
+        }
+
+        foreach (['warehouse', 'warehouseName', 'currentWarehouse', 'location'] as $key) {
+            if (! empty($params[$key])) {
+                $warehouse = Warehouse::where('name', 'like', "%{$params[$key]}%")
+                    ->orWhere('code', 'like', "%{$params[$key]}%")
+                    ->first();
+                if ($warehouse) {
+                    return $warehouse;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    protected function resolveBin(?string $value): ?WarehouseBin
+    {
+        $value = trim((string) $value);
+        if ($value === '') {
+            return null;
+        }
+
+        return WarehouseBin::with('level.rack.zone')
+            ->where('code', 'like', "%{$value}%")
+            ->orWhere('name', 'like', "%{$value}%")
+            ->orderBy('id')
+            ->first();
+    }
+
+    protected function binWarehouseId(WarehouseBin $bin): ?int
+    {
+        $bin->loadMissing('level.rack.zone');
+
+        return $bin->level?->rack?->zone?->warehouse_id;
+    }
+
+    protected function legWarehouseId(array $params, string $side, ?string &$error = null): ?int
+    {
+        $idKey = $side . 'Id';
+        $nameKey = $side;
+
+        if (! empty($params[$idKey])) {
+            return (int) $params[$idKey];
+        }
+
+        $name = $params[$nameKey] ?? null;
+        if (! $name && isset($params[$side . 'Warehouse'])) {
+            $name = $params[$side . 'Warehouse'];
+        }
+        if (! $name && isset($params[$side . 'WarehouseId'])) {
+            return (int) $params[$side . 'WarehouseId'];
+        }
+
+        $name = is_string($name) ? trim($name) : null;
+        if ($name === null || $name === '' || $name === 'N/A') {
+            return null;
+        }
+
+        $warehouseId = $this->warehouseIdByName($name);
+        if (! $warehouseId) {
+            $error = ucfirst($side) . ' warehouse not found: ' . $name;
+        }
+
+        return $warehouseId;
+    }
+
+    protected function upsertFirstLeg(Shipment $shipment, array $params, ?Order $order): ?string
+    {
+        $hasLegInput = array_key_exists('origin', $params)
+            || array_key_exists('destination', $params)
+            || array_key_exists('originId', $params)
+            || array_key_exists('destinationId', $params)
+            || array_key_exists('transportMethod', $params)
+            || array_key_exists('departureTime', $params)
+            || array_key_exists('arrivalEstimate', $params);
+
+        if (! $hasLegInput && $shipment->legs()->exists()) {
+            return null;
+        }
+
+        $error = null;
+        $originId = $this->legWarehouseId($params, 'origin', $error) ?? $order?->origin_warehouse_id;
+        if ($error) {
+            return $error;
+        }
+
+        $destinationError = null;
+        $destinationId = $this->legWarehouseId($params, 'destination', $destinationError) ?? $order?->destination_warehouse_id;
+        if ($destinationError) {
+            return $destinationError;
+        }
+
+        if (! $originId && ! $destinationId) {
+            return null;
+        }
+
+        $leg = $shipment->legs()->orderBy('leg_no')->first();
+
+        $attributes = [
+            'origin_warehouse_id' => $originId ?? $leg?->origin_warehouse_id,
+            'destination_warehouse_id' => $destinationId ?? $leg?->destination_warehouse_id,
+        ];
+
+        if (array_key_exists('transportMethod', $params) && $params['transportMethod']) {
+            $attributes['transport_method'] = strtolower($params['transportMethod']);
+        }
+        if (array_key_exists('departureTime', $params)) {
+            $attributes['departure_date'] = $this->normalizeDate($params['departureTime']);
+        }
+        if (array_key_exists('arrivalEstimate', $params)) {
+            $attributes['arrival_date'] = $this->normalizeDate($params['arrivalEstimate']);
+        }
+
+        if ($leg) {
+            $leg->update(array_filter($attributes, fn ($value) => $value !== null));
+        } else {
+            $shipment->legs()->create($attributes + [
+                'leg_no' => 1,
+                'transport_method' => strtolower($params['transportMethod'] ?? ($order?->transport_method ?? 'air')),
+                'status' => 'pending',
+                'departure_date' => $this->normalizeDate($params['departureTime'] ?? null),
+                'arrival_date' => $this->normalizeDate($params['arrivalEstimate'] ?? null),
+            ]);
+        }
+
+        return null;
+    }
+
+    protected function normalizeDate($value): ?string
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (is_numeric($value)) {
+            $timestamp = (int) $value;
+            if ($timestamp > 100000000000) {
+                $timestamp = intdiv($timestamp, 1000);
+            }
+
+            return date('Y-m-d H:i:s', $timestamp);
+        }
+
+        if ($value instanceof \DateTimeInterface) {
+            return $value->format('Y-m-d H:i:s');
+        }
+
+        $parsed = strtotime((string) $value);
+
+        return $parsed ? date('Y-m-d H:i:s', $parsed) : null;
+    }
+
+    protected function normalizeDateOnly($value): ?string
+    {
+        $date = $this->normalizeDate($value);
+
+        return $date ? substr($date, 0, 10) : null;
+    }
+
+    protected function normalizePackageStatus(string $status): string
+    {
+        $map = [
+            'PENDING' => Package::STATUS_PENDING,
+            'RECEIVED' => Package::STATUS_RECEIVED,
+            'IN WAREHOUSE' => Package::STATUS_IN_WAREHOUSE,
+            'CUSTOMS' => Package::STATUS_CUSTOMS,
+            'CLEARED' => Package::STATUS_CLEARED,
+            'IN TRANSIT' => Package::STATUS_IN_TRANSIT,
+            'ARRIVED' => Package::STATUS_ARRIVED,
+            'READY FOR PICKUP' => Package::STATUS_READY_FOR_PICKUP,
+            'OUT FOR DELIVERY' => Package::STATUS_OUT_FOR_DELIVERY,
+            'DELIVERED' => Package::STATUS_DELIVERED,
+            'PICKED UP' => Package::STATUS_PICKED_UP,
+            'CANCELLED' => Package::STATUS_PENDING,
+        ];
+
+        return $map[strtoupper($status)] ?? strtolower(str_replace(' ', '_', $status));
+    }
+
+    protected function displayPickupStatus(string $status): string
+    {
+        $map = [
+            Delivery::STATUS_PENDING => 'READY FOR PICKUP',
+            Delivery::STATUS_OUT_FOR_DELIVERY => 'OUT FOR DELIVERY',
+            Delivery::STATUS_PICKED_UP => 'PICKED UP',
+            Delivery::STATUS_DELIVERED => 'PICKED UP',
+            Delivery::STATUS_FAILED => 'FAILED',
+        ];
+
+        return $map[$status] ?? strtoupper(str_replace('_', ' ', $status));
+    }
+
+    protected function normalizeSettlementStatus(?string $status): ?string
+    {
+        if ($status === null || $status === '') {
+            return null;
+        }
+
+        $map = [
+            'PENDING' => CodCollection::STATUS_PENDING,
+            'COLLECTED' => CodCollection::STATUS_COLLECTED,
+            'PARTIAL' => CodCollection::STATUS_PARTIAL,
+            'SETTLED' => CodCollection::STATUS_SETTLED,
+            'DISPUTED' => 'disputed',
+        ];
+
+        return $map[strtoupper($status)] ?? strtolower($status);
+    }
+
+    protected function normalizeCostCategory(string $category): string
+    {
+        $map = [
+            'LAST-MILE' => 'last_mile',
+            'LAST MILE' => 'last_mile',
+            'LAST_MILE' => 'last_mile',
+            'WAREHOUSE' => 'warehouse',
+            'FREIGHT' => 'freight',
+            'CUSTOMS' => 'customs',
+            'OTHER' => 'other',
+        ];
+
+        return $map[strtoupper($category)] ?? strtolower($category);
+    }
+
+    protected function normalizeIdType(?string $value): ?string
+    {
+        if ($value === null || trim($value) === '') {
+            return null;
+        }
+
+        $value = strtolower(trim($value));
+
+        if (in_array($value, ['national_id', 'passport', 'tax_id'], true)) {
+            return $value;
+        }
+        if (str_contains($value, 'passport')) {
+            return 'passport';
+        }
+        if (str_contains($value, 'tax')) {
+            return 'tax_id';
+        }
+
+        return 'national_id';
+    }
+
+    protected function displayIdType(?string $value): ?string
+    {
+        $map = [
+            'national_id' => 'National ID',
+            'passport' => 'Passport',
+            'tax_id' => 'Tax ID',
+        ];
+
+        return $value ? ($map[$value] ?? ucfirst(str_replace('_', ' ', $value))) : null;
+    }
+
+    protected function normalizeEventStatus(string $status): string
+    {
+        $map = [
+            'ORDER CREATED' => 'pending',
+            'RECEIVED' => 'received',
+            'IN WAREHOUSE' => 'in_warehouse',
+            'READY FOR PICKUP' => 'ready_for_pickup',
+            'OUT FOR DELIVERY' => 'out_for_delivery',
+            'PICKED UP' => 'picked_up',
+            'IN TRANSIT' => 'in_transit',
+            'CONFIRMED' => 'confirmed',
+        ];
+
+        $key = strtoupper(trim($status));
+
+        return $map[$key] ?? strtolower(str_replace(' ', '_', $key));
+    }
+
+    /**
+     * Tracking events are stored per package (and mirrored to the order), so a
+     * display status can match more than one stored value.
+     */
+    protected function normalizeEventStatuses(string $status): array
+    {
+        $key = strtoupper(trim($status));
+        $variants = [
+            'RECEIVED' => ['received', 'confirmed'],
+            'DELIVERED' => ['delivered', 'completed'],
+            'COMPLETED' => ['completed', 'delivered'],
+            'ASSIGNED' => ['pending', 'out_for_delivery'],
+            'SCHEDULED' => ['draft'],
+            'DELAYED' => ['in_transit'],
+            'PENDING' => ['pending', 'received'],
+        ];
+
+        $statuses = array_merge([$this->normalizeEventStatus($status)], $variants[$key] ?? []);
+
+        return array_values(array_unique($statuses));
+    }
+
+    protected function trackingEventPayload(array $params): array
+    {
+        $operator = $params['operator'] ?? null;
+
+        return [
+            'status' => $this->normalizeEventStatus($params['status'] ?? 'ORDER CREATED'),
+            'location' => $params['location'] ?? null,
+            'note' => $params['note'] ?? null,
+            'actor_name' => $operator,
+            'actor_id' => $operator ? User::where('name', 'like', '%' . $operator . '%')->value('id') : auth()->id(),
+        ];
+    }
+
+    /**
+     * Shared completion for both delivery and self-pickup tasks.
+     * Returns true on success or an error message string.
+     */
+    protected function completeDeliveryTask(Delivery $delivery, array $params, string $via): bool|string
+    {
+        $isPickup = $delivery->type === Delivery::TYPE_PICKUP;
+
+        $receiverName = trim((string) ($params['receiverName'] ?? ($params['pickerName'] ?? '')));
+        if ($receiverName === '') {
+            $receiverName = $delivery->receiver_name;
+        }
+        if ($receiverName === '') {
+            return $isPickup ? 'Picker name is required' : 'Receiver name is required';
+        }
+
+        $idType = $this->normalizeIdType($params['receiverIdType'] ?? ($params['pickerIdType'] ?? null))
+            ?? $delivery->receiver_id_type;
+        $idNo = $params['receiverIdNumber'] ?? ($params['pickerIdNo'] ?? null) ?? $delivery->receiver_id_number;
+
+        if ($isPickup) {
+            if (! $idType) {
+                return 'Picker ID type is required';
+            }
+            if (empty($idNo)) {
+                return 'Picker ID number is required';
+            }
+        }
+
+        $order = $delivery->order;
+
+        $delivery->update([
+            'status' => $isPickup ? Delivery::STATUS_PICKED_UP : Delivery::STATUS_DELIVERED,
+            'delivered_at' => $delivery->delivered_at ?? now(),
+            'receiver_name' => $receiverName,
+            'receiver_phone' => $params['receiverPhone'] ?? $delivery->receiver_phone,
+            'receiver_id_type' => $idType,
+            'receiver_id_number' => $idNo,
+            'signature' => $params['signature'] ?? $delivery->signature,
+            'issue_reason' => null,
+            'notes' => $params['note'] ?? ($params['notes'] ?? $delivery->notes),
+        ]);
+
+        $collectedInput = isset($params['codCollected']) && $params['codCollected'] !== '' && $params['codCollected'] !== null
+            ? (float) $params['codCollected']
+            : null;
+
+        if ($order && ($order->payment_method === 'cod' || ($collectedInput !== null && $collectedInput > 0))) {
+            $expected = $order->payment_method === 'cod'
+                ? (float) $order->estimated_fee
+                : ($delivery->codCollection?->expected_amount ?? $collectedInput ?? 0);
+            $collected = $collectedInput ?? $expected;
+
+            $status = $collected >= $expected
+                ? CodCollection::STATUS_COLLECTED
+                : ($collected > 0 ? CodCollection::STATUS_PARTIAL : CodCollection::STATUS_PENDING);
+
+            CodCollection::updateOrCreate(
+                ['delivery_id' => $delivery->id],
+                [
+                    'order_id' => $order->id,
+                    'package_id' => $delivery->package_id,
+                    'expected_amount' => $expected,
+                    'collected_amount' => $collected,
+                    'difference' => round($expected - $collected, 2),
+                    'collection_via' => $via,
+                    'settlement_status' => $delivery->codCollection?->settlement_status === CodCollection::STATUS_SETTLED
+                        ? CodCollection::STATUS_SETTLED
+                        : $status,
+                    'collected_by_id' => auth()->id() ?? $delivery->driver_id,
+                    'collected_at' => $delivery->codCollection?->collected_at ?? now(),
+                    'notes' => $params['note'] ?? ($params['notes'] ?? $delivery->notes),
+                ]
+            );
+        }
+
+        if ($delivery->package) {
+            $delivery->package->setStatus(
+                $isPickup ? Package::STATUS_PICKED_UP : Package::STATUS_DELIVERED,
+                $delivery->package->currentWarehouse?->name,
+                $isPickup ? 'Picked up by customer' : 'Delivered to ' . $receiverName
+            );
+        }
+
+        if ($order) {
+            $order->update(['status' => Order::STATUS_COMPLETED]);
+        }
+
+        return true;
+    }
+
+    public function warehouseBins(Request $request)
+    {
+        $params = $this->getParams($request);
+
+        $query = WarehouseBin::query()->with(['level.rack.zone']);
+
+        if ($keyword = ($params['keyword'] ?? null)) {
+            $query->where(function ($q) use ($keyword) {
+                $q->where('code', 'like', "%{$keyword}%")
+                    ->orWhere('name', 'like', "%{$keyword}%");
+            });
+        }
+
+        if ($warehouseId = ($params['warehouseId'] ?? ($params['warehouse_id'] ?? null))) {
+            $query->whereHas('level.rack.zone', function ($q) use ($warehouseId) {
+                $q->where('warehouse_id', $warehouseId);
+            });
+        }
+
+        $items = $query->orderBy('code')->limit(300)->get()->map(fn (WarehouseBin $bin) => [
+            'id' => $bin->id,
+            'code' => $bin->code,
+            'name' => $bin->name,
+            'status' => $bin->status,
+            'warehouseId' => $bin->level?->rack?->zone?->warehouse_id,
+            'warehouseName' => $bin->level?->rack?->zone?->warehouse?->name,
+        ])->values();
+
+        return $this->frontendOk($items);
     }
 }

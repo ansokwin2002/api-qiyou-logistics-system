@@ -40,7 +40,7 @@ Route::prefix('v1')->group(function () {
             Route::put('profile', [DriverAppController::class, 'updateProfile']);
             Route::post('logout', [DriverAppController::class, 'logout']);
             Route::post('mytasks', [DriverAppController::class, 'myTasks']);
-            Route::get('task/{id}', [DriverAppController::class, 'taskDetail']);
+            Route::get('task/{taskKey}', [DriverAppController::class, 'taskDetail']);
             Route::post('updatestatus', [DriverAppController::class, 'updateStatus']);
             Route::post('location', [DriverAppController::class, 'updateLocation']);
         });
@@ -51,7 +51,7 @@ Route::prefix('v1')->group(function () {
             Route::get('profile', [CustomerAppController::class, 'profile']);
             Route::put('profile', [CustomerAppController::class, 'updateProfile']);
             Route::get('orders', [CustomerAppController::class, 'orders']);
-            Route::get('orders/{order}', [CustomerAppController::class, 'show']);
+            Route::get('orders/{orderKey}', [CustomerAppController::class, 'show']);
             Route::post('orders', [CustomerAppController::class, 'store']);
             Route::get('warehouses', [CustomerAppController::class, 'warehouses']);
             Route::post('support', [CustomerAppController::class, 'submitSupport']);
@@ -139,8 +139,9 @@ Route::prefix('manageapi')->group(function () {
         // Order CRUD
         Route::post('/order/getlist', [ManageApiController::class, 'orderList']);
         Route::match(['get', 'post'], '/order/get', [ManageApiController::class, 'orderGet']);
-        Route::post('/order/add', [ManageApiController::class, 'orderAdd']);
-        Route::post('/order/edit', [ManageApiController::class, 'orderEdit']);
+Route::post('/order/add', [ManageApiController::class, 'orderAdd']);
+Route::post('/order/edit', [ManageApiController::class, 'orderEdit']);
+Route::post('/order/setstatus', [ManageApiController::class, 'orderSetStatus']);
         Route::match(['get', 'post'], '/order/del', [ManageApiController::class, 'orderDel']);
 
         // Customer CRUD
@@ -155,14 +156,27 @@ Route::prefix('manageapi')->group(function () {
         Route::post('/warehouse/add', [ManageApiController::class, 'warehouseAdd']);
         Route::post('/warehouse/edit', [ManageApiController::class, 'warehouseEdit']);
         Route::match(['get', 'post'], '/warehouse/del', [ManageApiController::class, 'warehouseDel']);
+        Route::match(['get', 'post'], '/warehouse/bins', [ManageApiController::class, 'warehouseBins']);
 
-        // Package CRUD
+        // Package CRUD + flow actions
         Route::post('/package/getlist', [ManageApiController::class, 'packageList']);
+        Route::match(['get', 'post'], '/package/get', [ManageApiController::class, 'packageGet']);
         Route::post('/package/add', [ManageApiController::class, 'packageAdd']);
+        Route::post('/package/edit', [ManageApiController::class, 'packageEdit']);
         Route::match(['get', 'post'], '/package/del', [ManageApiController::class, 'packageDel']);
+        Route::post('/package/receive', [ManageApiController::class, 'packageReceive']);
+        Route::post('/package/assignbin', [ManageApiController::class, 'packageAssignBin']);
+        Route::post('/package/move', [ManageApiController::class, 'packageMove']);
 
-        // Shipment
+        // Shipment CRUD + flow actions
         Route::post('/shipment/getlist', [ManageApiController::class, 'shipmentList']);
+        Route::match(['get', 'post'], '/shipment/get', [ManageApiController::class, 'shipmentGet']);
+        Route::post('/shipment/add', [ManageApiController::class, 'shipmentAdd']);
+        Route::post('/shipment/edit', [ManageApiController::class, 'shipmentEdit']);
+        Route::match(['get', 'post'], '/shipment/del', [ManageApiController::class, 'shipmentDel']);
+        Route::post('/shipment/addleg', [ManageApiController::class, 'shipmentAddLeg']);
+        Route::post('/shipment/depart', [ManageApiController::class, 'shipmentDepart']);
+        Route::post('/shipment/arrive', [ManageApiController::class, 'shipmentArrive']);
 
         // Delivery
         Route::post('/delivery/getlist', [ManageApiController::class, 'deliveryList']);
@@ -171,26 +185,51 @@ Route::prefix('manageapi')->group(function () {
         Route::post('/delivery/edit', [ManageApiController::class, 'deliveryEdit']);
         Route::match(['get', 'post'], '/delivery/del', [ManageApiController::class, 'deliveryDel']);
         Route::post('/delivery/assign', [ManageApiController::class, 'deliveryAssign']);
+        Route::post('/delivery/start', [ManageApiController::class, 'deliveryStart']);
+        Route::post('/delivery/complete', [ManageApiController::class, 'deliveryComplete']);
+        Route::post('/delivery/fail', [ManageApiController::class, 'deliveryFail']);
         Route::get('/delivery/drivers', [ManageApiController::class, 'deliveryDrivers']);
         Route::get('/delivery/live', [ManageApiController::class, 'deliveryLive']);
         Route::match(['get', 'post'], '/delivery/orders', [ManageApiController::class, 'deliveryOrders']);
 
         // COD
         Route::post('/cod/getlist', [ManageApiController::class, 'codList']);
+        Route::match(['get', 'post'], '/cod/get', [ManageApiController::class, 'codGet']);
+        Route::post('/cod/add', [ManageApiController::class, 'codAdd']);
+        Route::post('/cod/edit', [ManageApiController::class, 'codEdit']);
+        Route::match(['get', 'post'], '/cod/del', [ManageApiController::class, 'codDel']);
+        Route::post('/cod/settle', [ManageApiController::class, 'codSettle']);
 
         // Cost
         Route::post('/cost/getlist', [ManageApiController::class, 'costList']);
+        Route::match(['get', 'post'], '/cost/get', [ManageApiController::class, 'costGet']);
         Route::post('/cost/add', [ManageApiController::class, 'costAdd']);
+        Route::post('/cost/edit', [ManageApiController::class, 'costEdit']);
         Route::match(['get', 'post'], '/cost/del', [ManageApiController::class, 'costDel']);
 
         // Tracking
         Route::post('/tracking/getlist', [ManageApiController::class, 'trackingList']);
+        Route::match(['get', 'post'], '/tracking/get', [ManageApiController::class, 'trackingGet']);
+        Route::post('/tracking/add', [ManageApiController::class, 'trackingAdd']);
+        Route::post('/tracking/edit', [ManageApiController::class, 'trackingEdit']);
+        Route::match(['get', 'post'], '/tracking/del', [ManageApiController::class, 'trackingDel']);
 
         // Customs
         Route::post('/customs/getlist', [ManageApiController::class, 'customsList']);
+        Route::match(['get', 'post'], '/customs/get', [ManageApiController::class, 'customsGet']);
+        Route::post('/customs/add', [ManageApiController::class, 'customsAdd']);
+        Route::post('/customs/edit', [ManageApiController::class, 'customsEdit']);
+        Route::match(['get', 'post'], '/customs/del', [ManageApiController::class, 'customsDel']);
+        Route::post('/customs/declared', [ManageApiController::class, 'customsDeclared']);
+        Route::post('/customs/cleared', [ManageApiController::class, 'customsCleared']);
 
         // Pickup
         Route::post('/pickup/getlist', [ManageApiController::class, 'pickupList']);
+        Route::match(['get', 'post'], '/pickup/get', [ManageApiController::class, 'pickupGet']);
+        Route::post('/pickup/add', [ManageApiController::class, 'pickupAdd']);
+        Route::post('/pickup/edit', [ManageApiController::class, 'pickupEdit']);
+        Route::match(['get', 'post'], '/pickup/del', [ManageApiController::class, 'pickupDel']);
+        Route::post('/pickup/complete', [ManageApiController::class, 'pickupComplete']);
 
         // Report
         Route::post('/report/getlist', [ManageApiController::class, 'reportList']);

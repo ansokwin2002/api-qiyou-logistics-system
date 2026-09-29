@@ -108,13 +108,21 @@ class Package extends Model
         $this->status = $status;
         $this->save();
 
-        $this->trackingEvents()->create([
+        $event = [
             'status' => $status,
             'location' => $location,
             'note' => $note,
             'actor_name' => auth()->user()?->name ?? 'system',
             'actor_id' => auth()->id(),
-        ]);
+        ];
+
+        $this->trackingEvents()->create($event);
+
+        // Mirror onto the order so order-level timelines (admin tracking page,
+        // customer order detail) show the full package journey too.
+        if ($this->order_id) {
+            Order::find($this->order_id)?->trackingEvents()->create($event);
+        }
 
         return $this;
     }

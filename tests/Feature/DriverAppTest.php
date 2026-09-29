@@ -11,6 +11,7 @@ use App\Models\Package;
 use App\Models\Role;
 use App\Models\User;
 use App\Models\Warehouse;
+use App\Support\NumberGenerator;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Tests\TestCase;
 
@@ -168,6 +169,71 @@ class DriverAppTest extends TestCase
         $this->assertSame('data:image/jpeg;base64,TESTSIG', $delivery->fresh()->signature);
         $this->assertSame(Package::STATUS_DELIVERED, $package->fresh()->status);
         $this->assertSame(Order::STATUS_COMPLETED, $order->fresh()->status);
+    }
+
+    public function test_driver_can_open_task_by_delivery_number(): void
+    {
+        $role = Role::create(['name' => 'Driver', 'slug' => 'driver']);
+        $user = User::create([
+            'name' => 'Number Driver',
+            'email' => 'number-driver@example.com',
+            'password' => bcrypt('secret12'),
+            'status' => 'active',
+        ]);
+        $user->roles()->attach($role);
+        $driver = Driver::create([
+            'user_id' => $user->id,
+            'name' => 'Number Driver',
+            'status' => 'active',
+        ]);
+        $warehouse = Warehouse::create([
+            'name' => 'Number Hub',
+            'code' => 'DEST-NUM-001',
+            'city' => 'Phnom Penh',
+            'country' => 'Cambodia',
+            'type' => 'destination',
+            'status' => 'active',
+        ]);
+        $customer = Customer::create([
+            'name' => 'Number Customer',
+            'email' => 'number-customer@example.com',
+            'status' => 'active',
+        ]);
+        $order = Order::create([
+            'order_no' => 'ORD-NUMBER-TEST',
+            'customer_id' => $customer->id,
+            'origin_warehouse_id' => $warehouse->id,
+            'destination_warehouse_id' => $warehouse->id,
+            'payment_method' => 'prepaid',
+            'fulfillment_method' => 'delivery',
+            'status' => Order::STATUS_PENDING,
+            'estimated_fee' => 0,
+            'currency' => 'USD',
+        ]);
+        $delivery = Delivery::create([
+            'order_id' => $order->id,
+            'type' => Delivery::TYPE_DELIVERY,
+            'driver_id' => $driver->user_id,
+            'status' => Delivery::STATUS_PENDING,
+            'receiver_name' => 'Number Receiver',
+        ]);
+        $token = $user->createToken('delivery-number-test')->plainTextToken;
+        $deliveryNo = NumberGenerator::displayNo('DLV', $delivery);
+
+        $this->withToken($token)
+            ->getJson('/api/v1/delivery/task/' . $deliveryNo)
+            ->assertOk()
+            ->assertJsonPath('data.id', $delivery->id)
+            ->assertJsonPath('data.deliveryNo', $deliveryNo);
+
+        $this->withToken($token)
+            ->getJson('/api/v1/delivery/task/' . $delivery->id)
+            ->assertOk()
+            ->assertJsonPath('data.id', $delivery->id);
+
+        $this->withToken($token)
+            ->getJson('/api/v1/delivery/task/DLV-1999-01-01-999')
+            ->assertNotFound();
     }
 
     public function test_driver_can_report_issue_on_task(): void

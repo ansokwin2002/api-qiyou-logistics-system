@@ -29,6 +29,52 @@ class CustomerAppController extends Controller
         return Customer::where('email', $user->email)->first();
     }
 
+    /**
+     * Accepts an order id, order number, tracking reference or a legacy base62 hash link.
+     */
+    protected function resolveOrderKey(string $key): ?Order
+    {
+        $key = trim($key);
+
+        if ($key === '') {
+            return null;
+        }
+
+        if (ctype_digit($key)) {
+            return Order::find((int) $key);
+        }
+
+        $order = Order::where('order_no', $key)->orWhere('tracking_ref', $key)->first();
+
+        if ($order) {
+            return $order;
+        }
+
+        if (preg_match('/^[0-9A-Za-z]{1,8}$/', $key)) {
+            return Order::find($this->decodeBase62($key));
+        }
+
+        return null;
+    }
+
+    protected function decodeBase62(string $hash): int
+    {
+        $chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+        $id = 0;
+
+        for ($i = 0, $len = strlen($hash); $i < $len; $i++) {
+            $pos = strpos($chars, $hash[$i]);
+
+            if ($pos === false) {
+                return 0;
+            }
+
+            $id = $id * 62 + $pos;
+        }
+
+        return $id;
+    }
+
     public function profile(Request $request)
     {
         $user = $request->user();
@@ -106,7 +152,13 @@ class CustomerAppController extends Controller
         ])->where('customer_id', $customer->id)->orderByDesc('id');
 
         if ($status = $request->input('status')) {
-            $query->where('status', $status);
+            $variants = [
+                'received' => ['received', 'confirmed'],
+                'in_transit' => ['in_transit', 'in_progress'],
+                'delivered' => ['delivered', 'completed'],
+                'in_warehouse' => ['in_warehouse', 'at_warehouse'],
+            ];
+            $query->whereIn('status', $variants[$status] ?? [$status]);
         }
 
         if ($date = $request->input('date')) {
@@ -132,8 +184,14 @@ class CustomerAppController extends Controller
         return $this->ok($result);
     }
 
-    public function show(Request $request, Order $order)
+    public function show(Request $request, string $orderKey)
     {
+        $order = $this->resolveOrderKey($orderKey);
+
+        if (! $order) {
+            return $this->error('Order not found', 404);
+        }
+
         $customer = $this->customerForUser($request->user());
 
         if (! $customer || (int) $order->customer_id !== (int) $customer->id) {

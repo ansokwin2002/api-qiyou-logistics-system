@@ -196,7 +196,7 @@ class DriverAppController extends Controller
         ]);
     }
 
-    public function taskDetail(Request $request, int $id)
+    public function taskDetail(Request $request, string $taskKey)
     {
         $driver = $this->driverContext($request)[1];
 
@@ -204,8 +204,14 @@ class DriverAppController extends Controller
             return $this->error('No driver profile linked to this account', 404);
         }
 
+        $deliveryId = $this->deliveryIdFromKey($taskKey);
+
+        if (! $deliveryId) {
+            return $this->error('Delivery task not found', 404);
+        }
+
         $delivery = Delivery::query()
-            ->where('id', $id)
+            ->where('id', $deliveryId)
             ->where('driver_id', $driver->user_id)
             ->where('type', Delivery::TYPE_DELIVERY)
             ->with([
@@ -416,6 +422,28 @@ class DriverAppController extends Controller
         }
 
         return [$user, $driver];
+    }
+
+    /**
+     * Accepts a numeric delivery id or a display number such as DLV-2026-09-28-001.
+     */
+    private function deliveryIdFromKey(string $key): ?int
+    {
+        $key = trim($key);
+
+        if ($key === '') {
+            return null;
+        }
+
+        if (ctype_digit($key)) {
+            return (int) $key;
+        }
+
+        if (preg_match('/^DLV-.*-(\d+)$/i', $key, $matches)) {
+            return (int) $matches[1];
+        }
+
+        return null;
     }
 
     private function userPayload(User $user): array
