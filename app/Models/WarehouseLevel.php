@@ -10,7 +10,7 @@ class WarehouseLevel extends Model
 
     public function rack()
     {
-        return $this->belongsTo(WarehouseRack::class);
+        return $this->belongsTo(WarehouseRack::class, 'warehouse_rack_id');
     }
 
     public function bins()

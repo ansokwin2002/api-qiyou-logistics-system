@@ -20,6 +20,7 @@ use App\Models\User;
 use App\Models\Warehouse;
 use App\Models\WarehouseBin;
 use App\Support\NumberGenerator;
+use App\Support\FeeCalculator;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
@@ -212,6 +213,28 @@ class ManageApiController extends Controller
             ]);
             $package->calculateWeights();
             $order->packages()->save($package);
+
+            // 05 Fee Calculation — fall back to the active rate card when the
+            // panel did not submit a logistics fee.
+            if (empty($data['logisticsFee'])) {
+                $origin = $originId ? Warehouse::find($originId) : null;
+                $destination = $destinationId ? Warehouse::find($destinationId) : null;
+
+                $quote = FeeCalculator::quote([
+                    'transport_method' => strtolower($data['transportMethod'] ?? 'air'),
+                    'origin_warehouse_id' => $origin?->id,
+                    'destination_warehouse_id' => $destination?->id,
+                    'origin_country' => $origin?->country,
+                    'destination_country' => $destination?->country,
+                ], FeeCalculator::orderChargeableWeight($order), 1);
+
+                if ($quote['rate_card_id'] !== null) {
+                    $order->update([
+                        'estimated_fee' => $quote['amount'],
+                        'currency' => $quote['currency'],
+                    ]);
+                }
+            }
 
             // First tracking event so the tracking page shows the new order.
             $order->trackingEvents()->create([

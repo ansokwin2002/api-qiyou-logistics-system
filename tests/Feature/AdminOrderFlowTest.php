@@ -91,7 +91,7 @@ class AdminOrderFlowTest extends TestCase
     public function test_delivery_order_flows_from_receive_to_cod_settlement(): void
     {
         // 1. Package received at the origin warehouse
-        $this->postJson('/api/manageapi/package/receive', [
+        $this->withToken($this->adminToken())->postJson('/api/manageapi/package/receive', [
             'data' => [
                 'id' => $this->package->id,
                 'warehouseId' => $this->origin->id,
@@ -104,7 +104,7 @@ class AdminOrderFlowTest extends TestCase
         // 2. Package stored in a bin
         $bin = $this->makeBin($this->origin, 'ZONE-A', 'RACK-1', 'L1', 'A-01-01');
 
-        $this->postJson('/api/manageapi/package/assignbin', [
+        $this->withToken($this->adminToken())->postJson('/api/manageapi/package/assignbin', [
             'data' => ['id' => $this->package->id, 'binLocation' => $bin->code],
         ])->assertOk()->assertJsonPath('code', '1');
 
@@ -112,7 +112,7 @@ class AdminOrderFlowTest extends TestCase
         $this->assertSame($bin->id, $this->package->fresh()->current_bin_id);
 
         // 3. Customs declared then cleared
-        $created = $this->postJson('/api/manageapi/customs/add', [
+        $created = $this->withToken($this->adminToken())->postJson('/api/manageapi/customs/add', [
             'data' => [
                 'orderNo' => 'ORD-FLOW-001',
                 'receiverIdType' => 'National ID',
@@ -128,18 +128,18 @@ class AdminOrderFlowTest extends TestCase
 
         $this->assertSame(Package::STATUS_CUSTOMS, $this->package->fresh()->status);
 
-        $this->postJson('/api/manageapi/customs/declared', ['data' => ['id' => $declarationId]])
+        $this->withToken($this->adminToken())->postJson('/api/manageapi/customs/declared', ['data' => ['id' => $declarationId]])
             ->assertOk()->assertJsonPath('code', '1')
             ->assertJsonPath('data.status', 'Declared');
 
-        $this->postJson('/api/manageapi/customs/cleared', ['data' => ['id' => $declarationId]])
+        $this->withToken($this->adminToken())->postJson('/api/manageapi/customs/cleared', ['data' => ['id' => $declarationId]])
             ->assertOk()->assertJsonPath('code', '1')
             ->assertJsonPath('data.status', 'Cleared');
 
         $this->assertSame(Package::STATUS_CLEARED, $this->package->fresh()->status);
 
         // 4. Shipment created, departed and arrived
-        $shipment = $this->postJson('/api/manageapi/shipment/add', [
+        $shipment = $this->withToken($this->adminToken())->postJson('/api/manageapi/shipment/add', [
             'data' => [
                 'orderNo' => 'ORD-FLOW-001',
                 'carrier' => 'AirAsia Cargo',
@@ -152,7 +152,7 @@ class AdminOrderFlowTest extends TestCase
         $shipmentId = $shipment->json('data.id');
         $this->assertCount(1, $shipment->json('data.legs'));
 
-        $this->postJson('/api/manageapi/shipment/depart', ['data' => ['id' => $shipmentId]])
+        $this->withToken($this->adminToken())->postJson('/api/manageapi/shipment/depart', ['data' => ['id' => $shipmentId]])
             ->assertOk()->assertJsonPath('code', '1')
             ->assertJsonPath('data.status', 'IN TRANSIT');
 
@@ -160,7 +160,7 @@ class AdminOrderFlowTest extends TestCase
         $this->assertSame($this->origin->id, $this->package->fresh()->current_warehouse_id);
         $this->assertSame(Order::STATUS_IN_PROGRESS, $this->order->fresh()->status);
 
-        $this->postJson('/api/manageapi/shipment/arrive', ['data' => ['id' => $shipmentId]])
+        $this->withToken($this->adminToken())->postJson('/api/manageapi/shipment/arrive', ['data' => ['id' => $shipmentId]])
             ->assertOk()->assertJsonPath('code', '1')
             ->assertJsonPath('data.status', 'COMPLETED');
 
@@ -183,7 +183,7 @@ class AdminOrderFlowTest extends TestCase
             'status' => 'active',
         ]);
 
-        $delivery = $this->postJson('/api/manageapi/delivery/add', [
+        $delivery = $this->withToken($this->adminToken())->postJson('/api/manageapi/delivery/add', [
             'data' => [
                 'orderNo' => 'ORD-FLOW-001',
                 'driverId' => $driverUser->id,
@@ -194,14 +194,14 @@ class AdminOrderFlowTest extends TestCase
         $delivery->assertOk()->assertJsonPath('code', '1');
         $deliveryId = $delivery->json('data.id');
 
-        $this->postJson('/api/manageapi/delivery/start', ['data' => ['id' => $deliveryId]])
+        $this->withToken($this->adminToken())->postJson('/api/manageapi/delivery/start', ['data' => ['id' => $deliveryId]])
             ->assertOk()->assertJsonPath('code', '1')
             ->assertJsonPath('data.status', 'OUT FOR DELIVERY');
 
         $this->assertSame(Package::STATUS_OUT_FOR_DELIVERY, $this->package->fresh()->status);
 
         // 6. Delivery completed with COD collected
-        $this->postJson('/api/manageapi/delivery/complete', [
+        $this->withToken($this->adminToken())->postJson('/api/manageapi/delivery/complete', [
             'data' => [
                 'id' => $deliveryId,
                 'receiverName' => 'Chan Dara',
@@ -218,18 +218,18 @@ class AdminOrderFlowTest extends TestCase
         $this->assertSame(CodCollection::STATUS_COLLECTED, $cod->settlement_status);
 
         // 7. COD settlement
-        $listed = $this->postJson('/api/manageapi/cod/getlist', ['data' => ['page' => 1, 'pageSize' => 10]]);
+        $listed = $this->withToken($this->adminToken())->postJson('/api/manageapi/cod/getlist', ['data' => ['page' => 1, 'pageSize' => 10]]);
         $listed->assertOk()->assertJsonPath('code', '1');
         $this->assertSame('Collected', $listed->json('data.data.0.settlementStatus'));
 
-        $this->postJson('/api/manageapi/cod/settle', ['data' => ['id' => $cod->id]])
+        $this->withToken($this->adminToken())->postJson('/api/manageapi/cod/settle', ['data' => ['id' => $cod->id]])
             ->assertOk()->assertJsonPath('code', '1')
             ->assertJsonPath('data.settlementStatus', 'Settled');
 
         $this->assertSame(CodCollection::STATUS_SETTLED, $cod->fresh()->settlement_status);
 
         // 8. Tracking page shows the full journey on the order timeline
-        $tracking = $this->postJson('/api/manageapi/tracking/getlist', ['data' => ['page' => 1, 'pageSize' => 50]]);
+        $tracking = $this->withToken($this->adminToken())->postJson('/api/manageapi/tracking/getlist', ['data' => ['page' => 1, 'pageSize' => 50]]);
         $tracking->assertOk()->assertJsonPath('code', '1');
 
         $statuses = collect($tracking->json('data.data'))->pluck('status')->all();
@@ -243,13 +243,13 @@ class AdminOrderFlowTest extends TestCase
         );
 
         // 9. Package detail round trip for the edit dialog
-        $this->getJson('/api/manageapi/package/get?id=' . $this->package->id)
+        $this->withToken($this->adminToken())->getJson('/api/manageapi/package/get?id=' . $this->package->id)
             ->assertOk()
             ->assertJsonPath('code', '1')
             ->assertJsonPath('data.status', 'DELIVERED')
             ->assertJsonPath('data.orderNo', 'ORD-FLOW-001');
 
-        $this->postJson('/api/manageapi/package/edit', [
+        $this->withToken($this->adminToken())->postJson('/api/manageapi/package/edit', [
             'data' => [
                 'id' => $this->package->id,
                 'barcode' => 'FLOW-BARCODE-001',
@@ -272,7 +272,7 @@ class AdminOrderFlowTest extends TestCase
     {
         $this->order->update(['fulfillment_method' => 'pickup']);
 
-        $pickup = $this->postJson('/api/manageapi/pickup/add', [
+        $pickup = $this->withToken($this->adminToken())->postJson('/api/manageapi/pickup/add', [
             'data' => [
                 'orderNo' => 'ORD-FLOW-001',
                 'pickerName' => 'Sokha',
@@ -284,13 +284,13 @@ class AdminOrderFlowTest extends TestCase
         $pickup->assertOk()->assertJsonPath('code', '1');
         $pickupId = $pickup->json('data.id');
 
-        $this->postJson('/api/manageapi/pickup/get?id=' . $pickupId)
+        $this->withToken($this->adminToken())->postJson('/api/manageapi/pickup/get?id=' . $pickupId)
             ->assertOk()
             ->assertJsonPath('data.status', 'READY FOR PICKUP');
 
         $this->assertSame(Package::STATUS_READY_FOR_PICKUP, $this->package->fresh()->status);
 
-        $this->postJson('/api/manageapi/pickup/complete', [
+        $this->withToken($this->adminToken())->postJson('/api/manageapi/pickup/complete', [
             'data' => [
                 'id' => $pickupId,
                 'pickerName' => 'Sokha',
@@ -310,11 +310,11 @@ class AdminOrderFlowTest extends TestCase
 
     public function test_admin_can_create_and_edit_cost_and_tracking_records(): void
     {
-        $this->postJson('/api/manageapi/package/receive', [
+        $this->withToken($this->adminToken())->postJson('/api/manageapi/package/receive', [
             'data' => ['id' => $this->package->id, 'warehouseId' => $this->origin->id],
         ])->assertOk()->assertJsonPath('code', '1');
 
-        $cost = $this->postJson('/api/manageapi/cost/add', [
+        $cost = $this->withToken($this->adminToken())->postJson('/api/manageapi/cost/add', [
             'data' => [
                 'orderNo' => 'ORD-FLOW-001',
                 'category' => 'Freight',
@@ -326,21 +326,21 @@ class AdminOrderFlowTest extends TestCase
         $cost->assertOk()->assertJsonPath('code', '1');
         $costId = $cost->json('data.id');
 
-        $this->getJson('/api/manageapi/cost/get?id=' . $costId)
+        $this->withToken($this->adminToken())->getJson('/api/manageapi/cost/get?id=' . $costId)
             ->assertOk()
             ->assertJsonPath('data.category', 'Freight')
             ->assertJsonPath('data.orderNo', 'ORD-FLOW-001')
             ->assertJsonPath('data.amount', 12.5);
 
-        $this->postJson('/api/manageapi/cost/edit', [
+        $this->withToken($this->adminToken())->postJson('/api/manageapi/cost/edit', [
             'data' => ['id' => $costId, 'amount' => 20, 'category' => 'Last-Mile', 'note' => 'Updated'],
         ])->assertOk()->assertJsonPath('code', '1');
 
-        $edited = $this->getJson('/api/manageapi/cost/get?id=' . $costId);
+        $edited = $this->withToken($this->adminToken())->getJson('/api/manageapi/cost/get?id=' . $costId);
         $edited->assertJsonPath('data.amount', 20)
             ->assertJsonPath('data.category', 'Last-Mile');
 
-        $event = $this->postJson('/api/manageapi/tracking/add', [
+        $event = $this->withToken($this->adminToken())->postJson('/api/manageapi/tracking/add', [
             'data' => [
                 'orderNo' => 'ORD-FLOW-001',
                 'status' => 'IN TRANSIT',
@@ -351,39 +351,39 @@ class AdminOrderFlowTest extends TestCase
         ]);
         $event->assertOk()->assertJsonPath('code', '1');
 
-        $listed = $this->postJson('/api/manageapi/tracking/getlist', ['data' => ['status' => 'IN TRANSIT']]);
+        $listed = $this->withToken($this->adminToken())->postJson('/api/manageapi/tracking/getlist', ['data' => ['status' => 'IN TRANSIT']]);
         $listed->assertOk()->assertJsonPath('code', '1');
         $this->assertNotEmpty($listed->json('data.data'));
 
-        $filtered = $this->postJson('/api/manageapi/tracking/getlist', ['data' => ['status' => 'RECEIVED']]);
+        $filtered = $this->withToken($this->adminToken())->postJson('/api/manageapi/tracking/getlist', ['data' => ['status' => 'RECEIVED']]);
         $filtered->assertOk()->assertJsonPath('code', '1');
         $this->assertNotEmpty($filtered->json('data.data'));
     }
 
     public function test_flow_actions_report_business_errors_with_http_200(): void
     {
-        $this->postJson('/api/manageapi/package/receive', [
+        $this->withToken($this->adminToken())->postJson('/api/manageapi/package/receive', [
             'data' => ['barcode' => 'DOES-NOT-EXIST'],
         ])->assertOk()->assertJsonPath('code', '0');
 
-        $this->postJson('/api/manageapi/package/add', [
+        $this->withToken($this->adminToken())->postJson('/api/manageapi/package/add', [
             'data' => ['barcode' => 'X-1'],
         ])->assertOk()->assertJsonPath('code', '0');
 
-        $this->postJson('/api/manageapi/shipment/add', [
+        $this->withToken($this->adminToken())->postJson('/api/manageapi/shipment/add', [
             'data' => ['orderNo' => 'MISSING-ORDER'],
         ])->assertOk()->assertJsonPath('code', '0');
 
-        $this->postJson('/api/manageapi/delivery/complete', [
+        $this->withToken($this->adminToken())->postJson('/api/manageapi/delivery/complete', [
             'data' => ['id' => 999999],
         ])->assertOk()->assertJsonPath('code', '0');
 
-        $this->postJson('/api/manageapi/pickup/add', [
+        $this->withToken($this->adminToken())->postJson('/api/manageapi/pickup/add', [
             'data' => ['orderNo' => 'ORD-FLOW-001'],
         ])->assertOk()->assertJsonPath('code', '0')
             ->assertJsonPath('message', 'Order ORD-FLOW-001 is set up for delivery, not self-pickup');
 
-        $this->postJson('/api/manageapi/cod/settle', [
+        $this->withToken($this->adminToken())->postJson('/api/manageapi/cod/settle', [
             'data' => ['id' => 999999],
         ])->assertOk()->assertJsonPath('code', '0');
     }

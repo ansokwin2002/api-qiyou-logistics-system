@@ -26,7 +26,15 @@ class Warehouse extends Model
 
     public function bins()
     {
-        return $this->hasManyThrough(WarehouseBin::class, WarehouseZone::class);
+        $zoneIds = $this->zones()->select('id');
+
+        return WarehouseBin::whereIn(
+            'warehouse_level_id',
+            WarehouseLevel::whereIn(
+                'warehouse_rack_id',
+                WarehouseRack::whereIn('warehouse_zone_id', $zoneIds)->select('id')
+            )->select('id')
+        );
     }
 
     public function ordersAsOrigin()

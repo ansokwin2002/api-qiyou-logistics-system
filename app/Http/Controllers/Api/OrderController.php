@@ -7,6 +7,8 @@ use App\Http\Controllers\Traits\ApiResponse;
 use App\Models\Delivery;
 use App\Models\Order;
 use App\Models\Package;
+use App\Models\Warehouse;
+use App\Support\FeeCalculator;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -107,6 +109,29 @@ class OrderController extends Controller
                 ]);
                 $package->calculateWeights();
                 $order->packages()->save($package);
+            }
+
+            // 05 Fee Calculation — price the shipment from the rate card when the
+            // caller did not supply an explicit fee.
+            if (empty($data['estimated_fee'])) {
+                $origin = Warehouse::find($data['origin_warehouse_id']);
+                $destination = Warehouse::find($data['destination_warehouse_id']);
+                $quantity = (int) $order->packages()->sum('quantity');
+
+                $quote = FeeCalculator::quote([
+                    'transport_method' => $data['transport_method'] ?? 'air',
+                    'origin_warehouse_id' => $origin?->id,
+                    'destination_warehouse_id' => $destination?->id,
+                    'origin_country' => $origin?->country,
+                    'destination_country' => $destination?->country,
+                ], FeeCalculator::orderChargeableWeight($order), max($quantity, 1));
+
+                if ($quote['rate_card_id'] !== null) {
+                    $order->update([
+                        'estimated_fee' => $quote['amount'],
+                        'currency' => $quote['currency'],
+                    ]);
+                }
             }
 
             $order->load('packages');

@@ -12,6 +12,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\ValidationException;
+use Laravel\Sanctum\PersonalAccessToken;
 
 class AuthController extends Controller
 {
@@ -133,5 +134,44 @@ class AuthController extends Controller
         $request->user()->currentAccessToken()->delete();
 
         return $this->ok(null, 'Logged out');
+    }
+
+    /**
+     * manageapi/account/auth — exchange a refresh token for a fresh session.
+     * The admin panel posts `{ refresh_token, grant_type, userId }` when a
+     * request comes back 401.
+     */
+    public function refresh(Request $request)
+    {
+        $data = $request->validate([
+            'refresh_token' => ['required', 'string'],
+        ]);
+
+        $token = PersonalAccessToken::findToken($data['refresh_token']);
+
+        if (! $token) {
+            return response()->json(['code' => '0', 'message' => 'Invalid refresh token', 'data' => null], 200);
+        }
+
+        $user = $token->tokenable;
+        if (! $user || ($user->status ?? 'active') !== 'active') {
+            return response()->json(['code' => '0', 'message' => 'Account is inactive', 'data' => null], 200);
+        }
+
+        $token->delete();
+        $plain = $user->createToken('logistics-api')->plainTextToken;
+        $user->load('roles');
+
+        return response()->json([
+            'code' => '1',
+            'message' => 'Token refreshed',
+            'data' => [
+                'token' => $plain,
+                'access_token' => $plain,
+                'refresh_token' => $plain,
+                'user' => $user,
+                'roles' => $user->role_names,
+            ],
+        ], 200);
     }
 }

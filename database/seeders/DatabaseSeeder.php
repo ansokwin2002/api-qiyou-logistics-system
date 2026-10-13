@@ -40,5 +40,7 @@ class DatabaseSeeder extends Seeder
             ['code' => 'KH-D01'],
             ['name' => 'Phnom Penh Destination Hub', 'city' => 'Phnom Penh', 'country' => 'Cambodia', 'type' => 'destination', 'status' => 'active']
         );
+
+        $this->call(V1CompletionSeeder::class);
     }
 }

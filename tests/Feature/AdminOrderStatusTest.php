@@ -57,7 +57,7 @@ class AdminOrderStatusTest extends TestCase
     {
         [$order, $package] = $this->makeOrder();
 
-        $updated = $this->postJson('/api/manageapi/order/setstatus', [
+        $updated = $this->withToken($this->adminToken())->postJson('/api/manageapi/order/setstatus', [
             'data' => [
                 'id' => $order->id,
                 'status' => 'At Warehouse',
@@ -74,7 +74,7 @@ class AdminOrderStatusTest extends TestCase
             'actor_name' => 'Admin',
         ]);
 
-        $this->postJson('/api/manageapi/order/setstatus', [
+        $this->withToken($this->adminToken())->postJson('/api/manageapi/order/setstatus', [
             'data' => ['id' => $order->id, 'status' => 'IN TRANSIT'],
         ])->assertOk()->assertJsonPath('code', '1');
 
@@ -93,7 +93,7 @@ class AdminOrderStatusTest extends TestCase
         ]);
         $token = $user->createToken('status-test')->plainTextToken;
 
-        $this->postJson('/api/manageapi/order/setstatus', [
+        $this->withToken($this->adminToken())->postJson('/api/manageapi/order/setstatus', [
             'data' => ['id' => Order::where('order_no', 'ORD-STATUS-TEST')->value('id'), 'status' => 'arrived'],
         ])->assertOk()->assertJsonPath('code', '1');
 
@@ -113,13 +113,13 @@ class AdminOrderStatusTest extends TestCase
     {
         [$order] = $this->makeOrder();
 
-        $this->postJson('/api/manageapi/order/setstatus', [
+        $this->withToken($this->adminToken())->postJson('/api/manageapi/order/setstatus', [
             'data' => ['id' => $order->id, 'status' => 'Teleported'],
         ])
             ->assertOk()
             ->assertJsonPath('code', '0');
 
-        $this->postJson('/api/manageapi/order/setstatus', [
+        $this->withToken($this->adminToken())->postJson('/api/manageapi/order/setstatus', [
             'data' => ['id' => 999999, 'status' => 'Arrived'],
         ])
             ->assertOk()

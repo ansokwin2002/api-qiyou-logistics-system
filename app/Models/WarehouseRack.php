@@ -10,7 +10,7 @@ class WarehouseRack extends Model
 
     public function zone()
     {
-        return $this->belongsTo(WarehouseZone::class);
+        return $this->belongsTo(WarehouseZone::class, 'warehouse_zone_id');
     }
 
     public function levels()

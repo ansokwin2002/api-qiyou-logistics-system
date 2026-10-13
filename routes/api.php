@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\Api\ActivityLogController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\I18nTranslationController;
 use App\Http\Controllers\Api\CodController;
@@ -12,9 +13,14 @@ use App\Http\Controllers\Api\DeliveryController;
 use App\Http\Controllers\Api\DriverAppController;
 use App\Http\Controllers\Api\DriverController;
 use App\Http\Controllers\Api\InvoiceController;
+use App\Http\Controllers\Api\MenuManageController;
 use App\Http\Controllers\Api\OrderController;
 use App\Http\Controllers\Api\PackageController;
+use App\Http\Controllers\Api\RateCardController;
+use App\Http\Controllers\Api\RoleManageController;
+use App\Http\Controllers\Api\SettingController;
 use App\Http\Controllers\Api\ShipmentController;
+use App\Http\Controllers\Api\UploadController;
 use App\Http\Controllers\Api\WarehouseController;
 use App\Http\Controllers\Api\ManageApiController;
 use App\Http\Controllers\Api\UserController;
@@ -111,6 +117,15 @@ Route::prefix('v1')->group(function () {
         Route::post('warehouse-levels/{level}/bins', [WarehouseController::class, 'storeBin']);
         Route::put('warehouse-bins/{bin}', [WarehouseController::class, 'updateBin']);
         Route::delete('warehouse-bins/{bin}', [WarehouseController::class, 'destroyBin']);
+
+        // 05 Fee Calculation — rate cards + quote engine
+        Route::apiResource('rate-cards', RateCardController::class);
+        Route::post('estimate', [RateCardController::class, 'estimate']);
+
+        // 16 Settings & Security
+        Route::get('settings', [SettingController::class, 'index']);
+        Route::put('settings', [SettingController::class, 'update'])->middleware('role:admin');
+        Route::get('activity-logs', [ActivityLogController::class, 'index'])->middleware('role:admin,manager');
     });
 });
 
@@ -120,8 +135,8 @@ Route::prefix('manageapi')->group(function () {
     Route::get('/i18n/locales', [I18nTranslationController::class, 'getAllLocales']);
 });
 
-// Sysuser routes for frontend (manageapi/sysuser/*) - no auth for testing
-Route::prefix('manageapi')->group(function () {
+// Sysuser routes for the admin panel (manageapi/sysuser/*)
+Route::prefix('manageapi')->middleware('auth:sanctum')->group(function () {
     Route::post('/sysuser/add', [UserController::class, 'store']);
     Route::post('/sysuser/getlist', [UserController::class, 'index']);
     Route::post('/sysuser/get', [UserController::class, 'show']);
@@ -131,11 +146,49 @@ Route::prefix('manageapi')->group(function () {
     Route::post('/sysuser/editpass', [UserController::class, 'editPass']);
     Route::post('/sysuser/resetpass', [UserController::class, 'resetPass']);
     Route::post('/sysuser/batchdel', [UserController::class, 'batchDelete']);
+
+    // 16 Settings
+    Route::get('/systemset/getlist', [SettingController::class, 'panelShow']);
+    Route::get('/systemset/get', [SettingController::class, 'panelShow']);
+    Route::post('/systemset/edit', [SettingController::class, 'panelUpdate']);
+
+    // 01 / 16 Role management
+    Route::get('/sysrole/getall', [RoleManageController::class, 'getAll']);
+    Route::post('/sysrole/getlist', [RoleManageController::class, 'getList']);
+    Route::match(['get', 'post'], '/sysrole/get', [RoleManageController::class, 'get']);
+    Route::post('/sysrole/add', [RoleManageController::class, 'store']);
+    Route::post('/sysrole/edit', [RoleManageController::class, 'update']);
+    Route::match(['get', 'post'], '/sysrole/del', [RoleManageController::class, 'destroy']);
+
+    // 16 Menu / permission-key management
+    Route::get('/sysmenu/getmenutree', [MenuManageController::class, 'tree']);
+    Route::get('/sysmenu/getmenus', [MenuManageController::class, 'tree']);
+    Route::match(['get', 'post'], '/sysmenu/get', [MenuManageController::class, 'get']);
+    Route::post('/sysmenu/add', [MenuManageController::class, 'store']);
+    Route::post('/sysmenu/edit', [MenuManageController::class, 'update']);
+    Route::match(['get', 'post'], '/sysmenu/del', [MenuManageController::class, 'destroy']);
+
+    // 16 Activity logs
+    Route::post('/activitylog/getlist', [ActivityLogController::class, 'list']);
+
+    // 05 Fee calculation
+    Route::post('/ratecard/getlist', [RateCardController::class, 'index']);
+    Route::match(['get', 'post'], '/ratecard/get', [RateCardController::class, 'show']);
+    Route::post('/ratecard/add', [RateCardController::class, 'store']);
+    Route::post('/ratecard/edit', [RateCardController::class, 'update']);
+    Route::match(['get', 'post'], '/ratecard/del', [RateCardController::class, 'destroy']);
+    Route::post('/ratecard/estimate', [RateCardController::class, 'estimate']);
 });
 
-// ManageAPI routes for frontend admin panel compatibility (maps CRUD-style calls to backend data)
-    // Note: auth middleware is disabled for development/demo mode. Enable in production.
-    Route::prefix('manageapi')->group(function () {
+// File uploads for branding / avatars
+Route::post('upload', [UploadController::class, 'store'])->middleware('auth:sanctum');
+
+// Token refresh for the admin panel session
+Route::post('manageapi/account/auth', [AuthController::class, 'refresh']);
+
+// ManageAPI routes for frontend admin panel compatibility (maps CRUD-style calls to backend data).
+// All endpoints require a valid Sanctum token; role checks live in the controllers.
+    Route::prefix('manageapi')->middleware('auth:sanctum')->group(function () {
         // Order CRUD
         Route::post('/order/getlist', [ManageApiController::class, 'orderList']);
         Route::match(['get', 'post'], '/order/get', [ManageApiController::class, 'orderGet']);

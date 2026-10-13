@@ -457,7 +457,7 @@ class DriverAppTest extends TestCase
         $this->assertEqualsWithDelta(11.56, $loc->latitude, 0.0001);
         $this->assertEqualsWithDelta(104.93, $loc->longitude, 0.0001);
 
-        $live = $this->getJson('/api/manageapi/delivery/live');
+        $live = $this->withToken($this->adminToken())->getJson('/api/manageapi/delivery/live');
         $live->assertOk()->assertJsonPath('code', '1');
         $this->assertIsArray($live->json('data'));
         $this->assertTrue(

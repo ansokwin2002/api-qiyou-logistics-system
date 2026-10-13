@@ -10,6 +10,6 @@ class WarehouseBin extends Model
 
     public function level()
     {
-        return $this->belongsTo(WarehouseLevel::class);
+        return $this->belongsTo(WarehouseLevel::class, 'warehouse_level_id');
     }
 }
