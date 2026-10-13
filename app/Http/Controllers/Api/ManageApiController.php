@@ -251,6 +251,10 @@ class ManageApiController extends Controller
             return $this->frontendError('Order not found');
         }
 
+        if (isset($data['status']) && $this->isLockedStatus($order->status)) {
+            return $this->frontendError('Delivery is already completed - the status can no longer be changed.');
+        }
+
         $updateData = [];
         if (isset($data['transportMethod'])) {
             $updateData['transport_method'] = strtolower($data['transportMethod']);
@@ -640,7 +644,7 @@ class ManageApiController extends Controller
         $params = $this->getParams($request);
 
         $query = Package::with([
-            'order:id,order_no,customer_id',
+            'order:id,order_no,customer_id,fulfillment_method',
             'currentWarehouse:id,name',
             'currentBin:id,code',
         ]);
@@ -678,6 +682,7 @@ class ManageApiController extends Controller
                 'chargeableWeight' => (float) $p->chargeable_weight,
                 'binLocation' => $p->currentBin?->code ?? $p->currentWarehouse?->name,
                 'status' => strtoupper(str_replace('_', ' ', $p->status)),
+                'fulfillmentMethod' => $p->order?->fulfillment_method ?? 'Delivery',
                 'declaredValue' => (float) $p->declared_value,
                 'addTime' => $p->created_at ? strtotime($p->created_at) : time(),
             ];
@@ -705,7 +710,7 @@ class ManageApiController extends Controller
 
     public function packagePayload(Package $package): array
     {
-        $package->loadMissing(['order:id,order_no', 'currentWarehouse:id,name', 'currentBin:id,code']);
+        $package->loadMissing(['order:id,order_no,fulfillment_method', 'currentWarehouse:id,name', 'currentBin:id,code']);
         $dims = array_values(array_filter([(float) $package->length, (float) $package->width, (float) $package->height], fn ($v) => $v > 0));
 
         return [
@@ -720,6 +725,7 @@ class ManageApiController extends Controller
             'chargeableWeight' => (float) $package->chargeable_weight,
             'binLocation' => $package->currentBin?->code ?? $package->currentWarehouse?->name ?? '',
             'status' => strtoupper(str_replace('_', ' ', $package->status)),
+            'fulfillmentMethod' => $package->order?->fulfillment_method ?? 'Delivery',
         ];
     }
 
@@ -822,6 +828,10 @@ class ManageApiController extends Controller
         $newStatus = isset($params['status']) && $params['status'] !== ''
             ? $this->normalizePackageStatus($params['status'])
             : null;
+
+        if ($newStatus && $newStatus !== $package->status && $this->isLockedStatus($package->status)) {
+            return $this->frontendError('Delivery is already completed - the status can no longer be changed.');
+        }
 
         if ($newStatus && $newStatus !== $package->status) {
             $package->save();
@@ -3529,6 +3539,15 @@ class ManageApiController extends Controller
         $date = $this->normalizeDate($value);
 
         return $date ? substr($date, 0, 10) : null;
+    }
+
+    /**
+     * Once the parcel left the customer's hands the journey is closed: no
+     * further status changes are accepted for an order or its packages.
+     */
+    protected function isLockedStatus(?string $status): bool
+    {
+        return in_array($status, ['delivered', 'picked_up', 'completed'], true);
     }
 
     protected function normalizePackageStatus(string $status): string
